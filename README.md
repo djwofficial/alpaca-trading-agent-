@@ -23,7 +23,9 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # add your Alpaca paper keys
-python src/main.py
+
+streamlit run dashboard/app.py   # connection check
+python src/main.py               # agent loop (not implemented yet)
 ```
 
 ## Demo

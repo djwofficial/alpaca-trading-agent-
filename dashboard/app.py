@@ -1,9 +1,12 @@
-"""Connection check — proves the Alpaca plumbing works.
+"""The agent's reasoning trail.
 
-This is deliberately not the demo dashboard. It answers four questions:
-do the keys authenticate, does the account come back, do positions render,
-and can we pull an options chain. Charts and decision history come later,
-once there is something real to put in them.
+Deliberately not a rebuild of Alpaca's position blotter — Alpaca already
+does that better. What Alpaca cannot show is *why* the agent acted, what it
+committed to in advance, and whether that reasoning held up. That is the
+whole product, so that is what this page is.
+
+Reads logs/decisions.jsonl. It never places orders and never imports the
+loop, so a crash here cannot touch trading.
 """
 
 from __future__ import annotations
@@ -20,17 +23,15 @@ sys.path.insert(0, str(ROOT / "src"))
 from data.client import (  # noqa: E402
     MissingCredentials,
     fetch_account,
-    fetch_option_chain,
-    fetch_option_contracts,
     fetch_positions,
     load_credentials,
-    option_data_client,
     trading_client,
 )
+from journal import Journal  # noqa: E402
 
-st.set_page_config(page_title="Agent — Connection Check", layout="wide")
-st.title("Connection check")
-st.caption("Step 1 of the build: prove the plumbing before anything trades.")
+st.set_page_config(page_title="Options Agent", layout="wide")
+
+ENTERED = {"submitted", "dry_run"}
 
 
 def money(value) -> str:
@@ -40,138 +41,147 @@ def money(value) -> str:
         return "—"
 
 
-# --- 1. Credentials -------------------------------------------------------
+# --- account line ---------------------------------------------------------
+
+st.title("Autonomous options agent")
+
+account = None
+positions: list = []
 try:
     creds = load_credentials()
-except MissingCredentials as exc:
-    st.warning(str(exc))
-    st.code("cp .env.example .env", language="bash")
-    st.stop()
-
-if creds.paper:
-    st.success("Paper trading — ALPACA_PAPER_TRADE is on.")
-else:
-    st.error("LIVE TRADING. The hackathon is paper-only. Set ALPACA_PAPER_TRADE=true.")
-
-# --- 2. Account -----------------------------------------------------------
-st.subheader("Account")
-
-if st.button("Refresh"):
-    st.rerun()
-
-try:
-    account = fetch_account(trading_client(creds))
+    client = trading_client(creds)
+    account = fetch_account(client)
+    positions = fetch_positions(client)
+except MissingCredentials:
+    st.warning("No Alpaca keys yet — showing the decision trail only.")
 except Exception as exc:
-    st.error(f"Account fetch failed: {exc}")
-    st.stop()
+    st.warning(f"Alpaca unreachable ({exc}). Showing the decision trail only.")
 
-left, middle, right = st.columns(3)
-left.metric("Equity", money(account.equity))
-middle.metric("Buying power", money(account.buying_power))
-right.metric("Options buying power", money(account.options_buying_power))
+if account:
+    equity = float(account.equity)
+    start = 100_000.0
+    left, middle, right = st.columns(3)
+    left.metric("Equity", money(equity), f"{(equity - start) / start:+.2%}")
+    middle.metric("Open positions", len(positions))
+    right.metric("Mode", "Paper" if creds.paper else "LIVE")
 
-st.write(
-    f"Account `{account.account_number}` · status **{account.status}** · "
-    f"options level **{account.options_trading_level}** "
-    f"(approved: {account.options_approved_level})"
-)
+st.divider()
 
-# Spreads need level 3. Finding this out now beats finding out at the open.
-try:
-    if int(account.options_trading_level or 0) < 3:
-        st.warning(
-            "Options level is below 3, so multi-leg spreads will be rejected. "
-            "Raise the level in the Alpaca dashboard before going live."
-        )
-except (TypeError, ValueError):
-    pass
+# --- the scorecard --------------------------------------------------------
 
-for flag in ("trading_blocked", "account_blocked", "trade_suspended_by_user"):
-    if getattr(account, flag, False):
-        st.error(f"{flag} is set — orders will not go through.")
+journal = Journal()
+entries = journal.read()
 
-# --- 3. Positions ---------------------------------------------------------
-st.subheader("Positions")
-
-try:
-    positions = fetch_positions(trading_client(creds))
-except Exception as exc:
-    st.error(f"Positions fetch failed: {exc}")
-    positions = []
-
-if positions:
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "symbol": p.symbol,
-                    "qty": p.qty,
-                    "side": p.side,
-                    "avg entry": money(p.avg_entry_price),
-                    "current": money(p.current_price),
-                    "market value": money(p.market_value),
-                    "unrealized P&L": money(p.unrealized_pl),
-                }
-                for p in positions
-            ]
-        ),
-        width="stretch",
+if not entries:
+    st.info(
+        "No decisions logged yet. Run the agent:\n\n"
+        "`python src/main.py --once --brain rules`"
     )
-else:
-    st.info("No open positions. Expected — nothing trades yet.")
+    st.stop()
 
-# --- 4. Options chain -----------------------------------------------------
-st.subheader("Options chain")
+decisions = [e for e in entries if e.get("event") in ENTERED | {"rejected", "skipped"}]
+taken = [e for e in decisions if e.get("event") in ENTERED]
+skipped = [e for e in decisions if e.get("event") == "skipped"]
+rejected = [e for e in decisions if e.get("event") == "rejected"]
 
-symbol = st.text_input("Underlying", value="SPY").strip().upper()
-days_out = st.slider("Days to expiration", 1, 45, 10)
+st.subheader("Scorecard")
+a, b, c, d = st.columns(4)
+a.metric("Decisions", len(decisions))
+b.metric("Trades taken", len(taken))
+c.metric("Declined by the agent", len(skipped))
+d.metric("Blocked by risk gates", len(rejected))
 
-if symbol:
-    try:
-        contracts = fetch_option_contracts(
-            trading_client(creds), symbol, days_out=days_out
-        )
-    except Exception as exc:
-        st.error(f"Contract fetch failed: {exc}")
-        contracts = []
+if decisions:
+    discipline = len(skipped) / len(decisions)
+    st.caption(
+        f"The agent chose not to trade {discipline:.0%} of the time. "
+        "Standing aside is a decision, and a cheap one — every skip below "
+        "records the reasoning that produced it."
+    )
 
-    if not contracts:
-        st.info(f"No contracts returned for {symbol} within {days_out} days.")
-    else:
-        st.write(f"{len(contracts)} contracts (metadata — served outside market hours)")
+st.divider()
 
-        quotes: dict = {}
-        try:
-            quotes = fetch_option_chain(
-                option_data_client(creds), symbol, days_out=days_out
-            )
-        except Exception as exc:
-            st.caption(f"Live snapshots unavailable: {exc}")
+# --- the decision trail ---------------------------------------------------
 
-        rows = []
-        for c in contracts:
-            snapshot = quotes.get(c.symbol)
-            quote = getattr(snapshot, "latest_quote", None)
-            rows.append(
-                {
-                    "symbol": c.symbol,
-                    "type": getattr(c.type, "value", c.type),
-                    "strike": float(c.strike_price),
-                    "expiration": c.expiration_date,
-                    "open interest": c.open_interest,
-                    "bid": getattr(quote, "bid_price", None),
-                    "ask": getattr(quote, "ask_price", None),
-                    "IV": getattr(snapshot, "implied_volatility", None),
-                }
-            )
+st.subheader("Decision trail")
 
+label = {
+    "submitted": ("🟢", "Entered"),
+    "dry_run": ("🔵", "Entered (dry run)"),
+    "skipped": ("⚪", "Declined"),
+    "rejected": ("🔴", "Blocked by risk gate"),
+    "exit_review": ("🟠", "Exit review"),
+    "submit_failed": ("🔴", "Submit failed"),
+    "cycle_error": ("🔴", "Cycle error"),
+}
+
+show_all = st.checkbox("Include exit reviews and errors", value=False)
+visible = entries if show_all else decisions
+
+for entry in reversed(visible[-40:]):
+    event = entry.get("event", "?")
+    icon, title = label.get(event, ("•", event))
+    when = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+    underlying = entry.get("underlying", "")
+
+    with st.container(border=True):
+        header, meta = st.columns([3, 1])
+        header.markdown(f"**{icon} {title}** · {underlying}")
+        meta.caption(when)
+
+        if entry.get("legs"):
+            legs = entry["legs"]
+            short = next((l for l in legs if l["side"] == "sell"), None)
+            long = next((l for l in legs if l["side"] == "buy"), None)
+            if short and long:
+                header.markdown(
+                    f"Sell {short['strike']:g}P / buy {long['strike']:g}P · "
+                    f"{entry.get('contracts', '?')} contracts · "
+                    f"exp {short['expiration']} · max loss {money(entry.get('max_loss'))}"
+                )
+
+        if entry.get("thesis"):
+            st.markdown(f"**Thesis** — {entry['thesis']}")
+        if entry.get("invalidation"):
+            st.markdown(f"**Would be wrong if** — {entry['invalidation']}")
+        if entry.get("reasoning"):
+            st.markdown(f"_{entry['reasoning']}_")
+        if event == "rejected":
+            st.error(f"Gate: {entry.get('reason', '')}")
+        elif entry.get("reason") and event in ENTERED:
+            st.caption(entry["reason"])
+
+st.divider()
+
+# --- positions, kept small on purpose -------------------------------------
+
+with st.expander(f"Open positions ({len(positions)})"):
+    if positions:
         st.dataframe(
-            pd.DataFrame(rows).sort_values(["expiration", "type", "strike"]),
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": p.symbol,
+                        "qty": p.qty,
+                        "avg entry": money(p.avg_entry_price),
+                        "current": money(p.current_price),
+                        "unrealized P&L": money(p.unrealized_pl),
+                    }
+                    for p in positions
+                ]
+            ),
             width="stretch",
         )
+    else:
+        st.caption("Flat.")
 
-        if not quotes:
-            st.caption(
-                "Bid/ask/IV are empty because the market is closed. "
-                "Contract metadata returning is what proves the plumbing works."
-            )
+with st.expander("Risk gates in force"):
+    st.markdown(
+        "- Max **5%** of equity at risk per position\n"
+        "- Max **10** contracts per order\n"
+        "- Max **5** open underlyings\n"
+        "- **No naked short options** — every short leg needs a protective long\n"
+        "- Trading **halts for the day** at −3%\n\n"
+        "Enforced in `src/risk/gates.py`, in code, not in the prompt. "
+        "The model picks from a menu these rules already approved."
+    )

@@ -43,9 +43,10 @@ def _leg_request(leg, opening: bool = True) -> OptionLegRequest:
 def build_order(proposal, limit_price: float, opening: bool = True) -> LimitOrderRequest:
     """Turn a proposal into a multi-leg limit order.
 
-    limit_price is the net price for the whole spread. Alpaca's sign
-    convention for credits must be confirmed against a real fill before
-    this runs unsupervised — verify in the dev account first.
+    limit_price is the net price for the whole spread, signed from the
+    account's perspective: negative is a credit received, positive is a debit
+    paid. Verified against live fills — a credit spread opened with a positive
+    limit is an instruction to pay that much, not to collect it.
     """
     return LimitOrderRequest(
         qty=proposal.contracts,

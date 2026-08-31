@@ -177,3 +177,24 @@ def test_closing_legs_use_close_position_intents():
     intents = {leg.side.value: leg.position_intent.value for leg in order.legs}
     assert intents["sell"] == "buy_to_close"
     assert intents["buy"] == "sell_to_close"
+
+
+# --- Alpaca's signed limit prices -----------------------------------------
+
+def test_opening_a_credit_spread_sends_a_negative_limit(client, journal):
+    """Prevents: paying a debit to open a trade meant to collect a credit.
+
+    Alpaca signs multi-leg limits from the account's perspective — negative
+    is money in. A positive limit on a credit spread instructs the broker to
+    pay that amount, which inverts the entire trade.
+    """
+    ex = executor(client, journal, dry_run=False)
+    ex.execute(spread(), FakeAccount(), [], limit_price=-0.40)
+
+    assert float(client.calls[0].limit_price) < 0
+
+
+def test_closing_a_credit_spread_sends_a_positive_limit(client, journal):
+    """Flattening a credit spread costs a debit, so the sign flips back."""
+    order = build_order(spread(), limit_price=0.12, opening=False)
+    assert float(order.limit_price) > 0

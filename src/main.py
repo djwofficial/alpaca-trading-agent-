@@ -271,8 +271,13 @@ def run_cycle(args, clients, gate, brain, executor, journal) -> None:
     proposal = candidate.to_proposal(
         decision.contracts, thesis=decision.thesis, invalidation=decision.invalidation
     )
+    # Alpaca signs multi-leg limit prices from the account's perspective:
+    # negative is a credit received, positive is a debit paid. Verified against
+    # real fills on 2026-08-31 (limit 0.46 -> filled -0.40). Sending a positive
+    # number here would tell the broker we are willing to PAY that much to open
+    # a credit spread.
     result = executor.execute(
-        proposal, account, positions, limit_price=round(candidate.credit, 2)
+        proposal, account, positions, limit_price=-round(candidate.credit, 2)
     )
     log(f"  {result.reason}")
 

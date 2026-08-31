@@ -42,6 +42,7 @@ from data.client import (  # noqa: E402
 )
 from execution.orders import OrderExecutor  # noqa: E402
 from journal import Journal  # noqa: E402
+from risk.stops import StopConfig, should_stop_out, summarize_spread  # noqa: E402
 from risk.gates import (  # noqa: E402
     OptionLeg,
     RiskConfig,
@@ -167,7 +168,7 @@ def closing_limit_price(legs, chain) -> float:
 
 # --- one cycle ------------------------------------------------------------
 
-def run_cycle(args, clients, gate, brain, executor, journal) -> None:
+def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
     trading, options, stocks = clients
 
     clock = fetch_clock(trading)
@@ -208,11 +209,26 @@ def run_cycle(args, clients, gate, brain, executor, journal) -> None:
 
     # --- exits first: freeing risk beats adding it ---
     for underlying, legs in open_by_underlying.items():
-        entry = last_entry_for(journal, underlying)
-        review = brain.review_exit(describe_position(legs, entry), context)
-        log(f"  {underlying}: {review.action} — {review.reasoning[:90]}")
+        # Mechanical stops run before the model and fire without it. If the
+        # API is down or out of credit, this is the only thing standing
+        # between an open position and its maximum loss.
+        state = summarize_spread(legs)
+        forced, stop_reason = (
+            should_stop_out(state, spot, datetime.now(timezone.utc).date(), stops)
+            if state
+            else (False, "")
+        )
 
-        if review.action == "close":
+        if forced:
+            review_action, reasoning = "close", stop_reason
+            thesis_valid = False
+        else:
+            review = brain.review_exit(describe_position(legs, last_entry_for(journal, underlying)), context)
+            review_action, reasoning = review.action, review.reasoning
+            thesis_valid = review.thesis_still_valid
+            log(f"  {underlying}: {review_action} — {reasoning[:90]}")
+
+        if review_action == "close":
             proposal = closing_proposal(legs, underlying)
             decision = executor.execute(
                 proposal,
@@ -224,11 +240,12 @@ def run_cycle(args, clients, gate, brain, executor, journal) -> None:
             journal.record(
                 event="exit_review",
                 underlying=underlying,
-                thesis_still_valid=review.thesis_still_valid,
-                reasoning=review.reasoning,
+                mechanical=forced,
+                thesis_still_valid=thesis_valid,
+                reasoning=reasoning,
                 outcome=decision.reason,
             )
-            log(f"  {underlying}: CLOSE — {decision.reason}")
+            log(f"  {underlying}: CLOSE — {reasoning[:70]} | {decision.reason}")
 
     if gate.halted:
         return
@@ -296,6 +313,10 @@ def build_args():
     parser.add_argument("--min-cushion", type=float, default=0.005)
     parser.add_argument("--max-cushion", type=float, default=0.03)
     parser.add_argument(
+        "--stop-multiple", type=float, default=2.0,
+        help="close a spread once it loses this multiple of the credit taken in",
+    )
+    parser.add_argument(
         "--ignore-hours", action="store_true", help="run even when the market is closed"
     )
     return parser.parse_args()
@@ -310,6 +331,7 @@ def main():
     journal = Journal()
     brain = SingleAnalystBrain() if args.brain == "claude" else RuleBasedBrain()
     executor = OrderExecutor(clients[0], gate, journal, dry_run=not args.live)
+    stops = StopConfig(loss_multiple_of_credit=args.stop_multiple)
 
     mode = "LIVE" if args.live else "DRY RUN"
     log(f"{mode} · {args.brain} brain · {args.symbol} · paper={creds.paper}")
@@ -318,7 +340,7 @@ def main():
 
     while True:
         try:
-            run_cycle(args, clients, gate, brain, executor, journal)
+            run_cycle(args, clients, gate, brain, executor, journal, stops)
         except KeyboardInterrupt:
             log("Stopped.")
             return

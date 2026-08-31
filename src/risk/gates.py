@@ -2,9 +2,17 @@
 
 Every proposed trade passes through check() before execution.
 If any gate fails, the trade is rejected and logged.
+
+These limits live in code, not in the prompt. An LLM can be argued out of an
+instruction; it cannot be argued out of a function that returns False.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+
+# OCC option symbols end with YYMMDD + C/P + 8-digit strike = 15 characters.
+_OCC_SUFFIX_LENGTH = 15
 
 
 @dataclass
@@ -16,21 +24,171 @@ class RiskConfig:
     allow_naked_short_options: bool = False
 
 
+@dataclass(frozen=True)
+class OptionLeg:
+    """One leg of a proposed order."""
+
+    symbol: str          # OCC symbol, e.g. SPY260831P00765000
+    side: str            # "buy" or "sell"
+    option_type: str     # "call" or "put"
+    strike: float
+    expiration: str      # YYYY-MM-DD
+
+
+@dataclass(frozen=True)
+class TradeProposal:
+    """What the agent wants to do, and why.
+
+    max_loss is the worst case in dollars for the whole order, not per
+    contract. The agent must state it up front: a trade whose downside
+    cannot be named is not a trade we take.
+    """
+
+    underlying: str
+    legs: tuple[OptionLeg, ...]
+    contracts: int
+    max_loss: float
+    thesis: str = ""
+    invalidation: str = ""
+
+
+def underlying_from_occ(symbol: str) -> str:
+    """Pull the underlying out of an OCC symbol (SPY260831P00765000 -> SPY)."""
+    if len(symbol) > _OCC_SUFFIX_LENGTH:
+        return symbol[:-_OCC_SUFFIX_LENGTH].strip()
+    return symbol.strip()
+
+
 class RiskGate:
     def __init__(self, config: RiskConfig):
         self.config = config
         self.halted = False
+        self.halt_reason = ""
 
     def check(self, proposal, account, positions) -> tuple[bool, str]:
         """Return (approved, reason)."""
         if self.halted:
-            return False, "Trading halted for the day"
+            return False, self.halt_reason or "Trading halted for the day"
 
-        # TODO: implement each gate
+        gates = (
+            self._check_order_size,
+            self._check_defined_risk,
+            self._check_position_size,
+            self._check_open_positions,
+        )
+        for gate in gates:
+            approved, reason = gate(proposal, account, positions)
+            if not approved:
+                return False, reason
+
         return True, "approved"
 
-    def update_daily_pnl(self, equity, starting_equity):
+    # --- individual gates -------------------------------------------------
+
+    def _check_order_size(self, proposal, account, positions) -> tuple[bool, str]:
+        """Cap contracts per order so one fat finger cannot size up the book."""
+        if proposal.contracts < 1:
+            return False, "Contract count must be at least 1"
+
+        limit = self.config.max_contracts_per_order
+        if proposal.contracts > limit:
+            return False, (
+                f"{proposal.contracts} contracts exceeds the per-order limit of {limit}"
+            )
+        return True, ""
+
+    def _check_defined_risk(self, proposal, account, positions) -> tuple[bool, str]:
+        """Every short leg needs a long leg capping its loss.
+
+        A short put is protected by a long put at a lower strike; a short call
+        by a long call at a higher strike. Same expiration, or the protection
+        expires first and leaves the short exposed.
+        """
+        if self.config.allow_naked_short_options:
+            return True, ""
+
+        for short in (leg for leg in proposal.legs if leg.side == "sell"):
+            protected = any(
+                leg.side == "buy"
+                and leg.option_type == short.option_type
+                and leg.expiration == short.expiration
+                and (
+                    leg.strike < short.strike
+                    if short.option_type == "put"
+                    else leg.strike > short.strike
+                )
+                for leg in proposal.legs
+            )
+            if not protected:
+                return False, (
+                    f"Naked short {short.option_type} at {short.strike:g} "
+                    f"({short.expiration}) — no protective long leg"
+                )
+        return True, ""
+
+    def _check_position_size(self, proposal, account, positions) -> tuple[bool, str]:
+        """No single trade may risk more than max_position_pct of equity."""
+        try:
+            equity = float(account.equity)
+        except (AttributeError, TypeError, ValueError):
+            return False, "Account equity unavailable — cannot size the trade"
+
+        if equity <= 0:
+            return False, "Account equity is zero or negative"
+
+        if proposal.max_loss <= 0:
+            return False, "Proposal must state a positive max_loss"
+
+        cap = equity * self.config.max_position_pct
+        if proposal.max_loss > cap:
+            return False, (
+                f"Max loss ${proposal.max_loss:,.2f} exceeds the "
+                f"{self.config.max_position_pct:.0%} cap of ${cap:,.2f}"
+            )
+        return True, ""
+
+    def _check_open_positions(self, proposal, account, positions) -> tuple[bool, str]:
+        """Cap how many underlyings we are exposed to at once.
+
+        A spread shows up as two rows in Alpaca, so count distinct
+        underlyings rather than raw position rows.
+        """
+        underlyings = {underlying_from_occ(p.symbol) for p in positions}
+
+        # Adjusting an underlying we already hold is not a new position.
+        if proposal.underlying in underlyings:
+            return True, ""
+
+        limit = self.config.max_open_positions
+        if len(underlyings) >= limit:
+            return False, (
+                f"Already holding {len(underlyings)} positions "
+                f"({', '.join(sorted(underlyings))}) — limit is {limit}"
+            )
+        return True, ""
+
+    # --- kill switch ------------------------------------------------------
+
+    def update_daily_pnl(self, equity, starting_equity) -> None:
         """Trip the kill switch if the daily loss limit is breached."""
+        try:
+            equity = float(equity)
+            starting_equity = float(starting_equity)
+        except (TypeError, ValueError):
+            return
+
+        if starting_equity <= 0:
+            return
+
         loss_pct = (starting_equity - equity) / starting_equity
         if loss_pct >= self.config.max_daily_loss_pct:
             self.halted = True
+            self.halt_reason = (
+                f"Daily loss limit hit: down {loss_pct:.2%} "
+                f"(${starting_equity:,.2f} to ${equity:,.2f}). Trading halted."
+            )
+
+    def reset_for_new_day(self) -> None:
+        """Clear the halt at the start of a new session."""
+        self.halted = False
+        self.halt_reason = ""

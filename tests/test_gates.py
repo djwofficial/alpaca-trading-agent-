@@ -24,6 +24,16 @@ class FakeAccount:
 @dataclass
 class FakePosition:
     symbol: str
+    qty: str = "-1"        # short leg by default; one short leg == one spread
+
+
+def spread_legs(*underlyings: str) -> list[FakePosition]:
+    """Open spreads: each contributes a short leg and a long leg."""
+    positions = []
+    for symbol in underlyings:
+        positions.append(FakePosition(f"{symbol}260904P00100000", "-1"))
+        positions.append(FakePosition(f"{symbol}260904P00095000", "1"))
+    return positions
 
 
 def spread(
@@ -165,33 +175,55 @@ def test_zero_contracts_is_rejected(gate):
 
 # --- open positions -------------------------------------------------------
 
-def test_position_limit_counts_underlyings_not_legs(gate):
-    """Prevents: a spread counting twice and locking the agent out early."""
-    positions = [
-        FakePosition("SPY260904P00765000"),
-        FakePosition("SPY260904P00760000"),
-    ]
-    approved, reason = gate.check(spread(underlying="QQQ"), FakeAccount(), positions)
+def test_a_spread_counts_once_not_twice(gate):
+    """Prevents: a two-legged spread eating two slots and locking the agent out."""
+    approved, reason = gate.check(
+        spread(underlying="QQQ"), FakeAccount(), spread_legs("SPY")
+    )
     assert approved, reason
 
 
-def test_sixth_underlying_is_rejected(gate):
-    positions = [
-        FakePosition(f"{sym}260904P00100000")
-        for sym in ("SPY", "QQQ", "IWM", "DIA", "AAPL")
-    ]
+def test_sixth_open_spread_is_rejected(gate):
+    positions = spread_legs("SPY", "QQQ", "IWM", "DIA", "AAPL")
     approved, reason = gate.check(spread(underlying="TSLA"), FakeAccount(), positions)
     assert not approved
     assert "limit is 5" in reason
 
 
-def test_adjusting_an_existing_underlying_is_allowed(gate):
-    positions = [
-        FakePosition(f"{sym}260904P00100000")
-        for sym in ("SPY", "QQQ", "IWM", "DIA", "AAPL")
-    ]
-    approved, reason = gate.check(spread(underlying="SPY"), FakeAccount(), positions)
+def test_second_spread_on_the_same_name_is_allowed(gate):
+    approved, reason = gate.check(spread(underlying="SPY"), FakeAccount(), spread_legs("SPY"))
     assert approved, reason
+
+
+def test_third_spread_on_the_same_name_is_rejected(gate):
+    """Prevents: stacking one underlying into a single oversized directional bet.
+
+    This is the case the per-position risk cap cannot see — each spread is
+    individually under 5% of equity while the combined exposure is not.
+    """
+    positions = spread_legs("SPY", "SPY")
+    approved, reason = gate.check(spread(underlying="SPY"), FakeAccount(), positions)
+    assert not approved
+    assert "per underlying" in reason
+
+
+def test_stacking_cannot_run_away_across_many_cycles(gate):
+    """The bug this replaced allowed unbounded SPY spreads once one was open."""
+    positions: list = []
+    approved_count = 0
+    for _ in range(30):
+        approved, _ = gate.check(spread(underlying="SPY"), FakeAccount(), positions)
+        if approved:
+            approved_count += 1
+            positions.extend(spread_legs("SPY"))
+    assert approved_count == 2, "unbounded stacking on one underlying"
+
+
+def test_long_only_positions_do_not_count_as_open_spreads(gate):
+    """A long leg without a short is not a spread we opened."""
+    positions = [FakePosition("SPY260904P00100000", "1")]
+    approved, _ = gate.check(spread(underlying="QQQ"), FakeAccount(), positions)
+    assert approved
 
 
 # --- kill switch ----------------------------------------------------------

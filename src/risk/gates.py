@@ -20,6 +20,7 @@ class RiskConfig:
     max_position_pct: float = 0.05      # max 5% of equity per position
     max_daily_loss_pct: float = 0.03    # halt trading after -3% day
     max_open_positions: int = 5
+    max_spreads_per_underlying: int = 2
     max_contracts_per_order: int = 10
     allow_naked_short_options: bool = False
 
@@ -51,6 +52,13 @@ class TradeProposal:
     thesis: str = ""
     invalidation: str = ""
     closing: bool = False   # closing reduces risk; entry gates do not apply
+
+
+def _is_short(position) -> bool:
+    try:
+        return float(position.qty) < 0
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def underlying_from_occ(symbol: str) -> str:
@@ -158,23 +166,42 @@ class RiskGate:
         return True, ""
 
     def _check_open_positions(self, proposal, account, positions) -> tuple[bool, str]:
-        """Cap how many underlyings we are exposed to at once.
+        """Bound both the number of open spreads and how many sit on one name.
 
-        A spread shows up as two rows in Alpaca, so count distinct
-        underlyings rather than raw position rows.
+        Each defined-risk spread has exactly one short leg, so counting short
+        option positions counts spreads — a spread occupies two rows in Alpaca
+        and would otherwise double-count.
+
+        The per-underlying cap is the one that matters. Five spreads on five
+        different names are five bets; five spreads on SPY are one bet at five
+        times the size, and the per-position risk cap cannot see that.
         """
-        underlyings = {underlying_from_occ(p.symbol) for p in positions}
+        short_legs = [
+            position
+            for position in positions
+            if len(position.symbol) > _OCC_SUFFIX_LENGTH and _is_short(position)
+        ]
 
-        # Adjusting an underlying we already hold is not a new position.
-        if proposal.underlying in underlyings:
-            return True, ""
-
-        limit = self.config.max_open_positions
-        if len(underlyings) >= limit:
+        total = len(short_legs)
+        if total >= self.config.max_open_positions:
             return False, (
-                f"Already holding {len(underlyings)} positions "
-                f"({', '.join(sorted(underlyings))}) — limit is {limit}"
+                f"Already holding {total} open spreads — limit is "
+                f"{self.config.max_open_positions}"
             )
+
+        same_name = [
+            position
+            for position in short_legs
+            if underlying_from_occ(position.symbol) == proposal.underlying
+        ]
+        limit = self.config.max_spreads_per_underlying
+        if len(same_name) >= limit:
+            return False, (
+                f"Already holding {len(same_name)} spreads on {proposal.underlying} — "
+                f"limit is {limit} per underlying. Stacking one name concentrates "
+                f"risk the per-position cap cannot see."
+            )
+
         return True, ""
 
     # --- kill switch ------------------------------------------------------

@@ -50,6 +50,7 @@ class TradeProposal:
     max_loss: float
     thesis: str = ""
     invalidation: str = ""
+    closing: bool = False   # closing reduces risk; entry gates do not apply
 
 
 def underlying_from_occ(symbol: str) -> str:
@@ -66,7 +67,16 @@ class RiskGate:
         self.halt_reason = ""
 
     def check(self, proposal, account, positions) -> tuple[bool, str]:
-        """Return (approved, reason)."""
+        """Return (approved, reason).
+
+        Closing orders bypass the entry gates, including the halt. A closing
+        spread inverts its legs — the long becomes a sale — so the naked-short
+        check would otherwise reject the agent's own exit, and a halted agent
+        could never flatten the position that halted it.
+        """
+        if getattr(proposal, "closing", False):
+            return True, "approved — closing order, risk reducing"
+
         if self.halted:
             return False, self.halt_reason or "Trading halted for the day"
 

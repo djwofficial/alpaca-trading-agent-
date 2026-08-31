@@ -8,12 +8,18 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
 from alpaca.data.historical.option import OptionHistoricalDataClient
-from alpaca.data.requests import OptionChainRequest
+from alpaca.data.historical.stock import StockHistoricalDataClient
+from alpaca.data.requests import (
+    OptionChainRequest,
+    StockBarsRequest,
+    StockLatestTradeRequest,
+)
+from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
 
@@ -123,3 +129,34 @@ def fetch_option_chain(
         expiration_date_lte=today + timedelta(days=days_out),
     )
     return client.get_option_chain(request)
+
+
+def stock_data_client(creds: Credentials | None = None) -> StockHistoricalDataClient:
+    creds = creds or load_credentials()
+    return StockHistoricalDataClient(
+        api_key=creds.api_key, secret_key=creds.secret_key
+    )
+
+
+def fetch_spot(client: StockHistoricalDataClient, symbol: str) -> float:
+    """Last traded price of the underlying."""
+    request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+    return float(client.get_stock_latest_trade(request)[symbol].price)
+
+
+def fetch_daily_bars(
+    client: StockHistoricalDataClient, symbol: str, *, days: int = 10
+) -> list:
+    """Recent daily bars, oldest first — the agent's sense of where we are."""
+    request = StockBarsRequest(
+        symbol_or_symbols=symbol,
+        timeframe=TimeFrame.Day,
+        start=datetime.now(timezone.utc) - timedelta(days=days * 2),
+    )
+    bars = client.get_stock_bars(request)
+    return list(bars[symbol])[-days:] if symbol in bars.data else []
+
+
+def fetch_clock(client: TradingClient):
+    """Market open/closed and the next transition."""
+    return client.get_clock()

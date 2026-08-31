@@ -239,3 +239,50 @@ def test_halt_blocks_every_trade_until_reset(gate):
 )
 def test_underlying_parsing(symbol, expected):
     assert underlying_from_occ(symbol) == expected
+
+
+# --- closing orders -------------------------------------------------------
+
+def closing_spread() -> TradeProposal:
+    """Exiting a put credit spread: the legs invert."""
+    return TradeProposal(
+        underlying="SPY",
+        legs=(
+            OptionLeg("SPY260904P00765000", "buy", "put", 765, "2026-09-04"),
+            OptionLeg("SPY260904P00760000", "sell", "put", 760, "2026-09-04"),
+        ),
+        contracts=10,
+        max_loss=0.0,
+        closing=True,
+    )
+
+
+def test_closing_order_is_not_blocked_by_the_naked_short_gate(gate):
+    """Prevents: the agent being unable to exit its own defined-risk spread."""
+    approved, reason = gate.check(closing_spread(), FakeAccount(), [])
+    assert approved, reason
+    assert "closing" in reason
+
+
+def test_closing_order_is_allowed_while_halted(gate):
+    """Prevents: a halted agent trapped in the position that halted it."""
+    gate.update_daily_pnl(equity=90_000, starting_equity=100_000)
+    assert gate.halted
+    approved, _ = gate.check(closing_spread(), FakeAccount(), [])
+    assert approved
+
+
+def test_closing_order_ignores_the_position_limit(gate):
+    positions = [
+        FakePosition(f"{sym}260904P00100000")
+        for sym in ("SPY", "QQQ", "IWM", "DIA", "AAPL", "TSLA")
+    ]
+    approved, _ = gate.check(closing_spread(), FakeAccount(), positions)
+    assert approved
+
+
+def test_opening_order_still_blocked_when_halted(gate):
+    """The bypass must not leak to entries."""
+    gate.update_daily_pnl(equity=90_000, starting_equity=100_000)
+    approved, _ = gate.check(spread(), FakeAccount(), [])
+    assert not approved

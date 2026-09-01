@@ -102,6 +102,16 @@ b.metric("Trades taken", len(taken))
 c.metric("Declined by the agent", len(skipped))
 d.metric("Blocked by risk gates", len(rejected))
 
+calls = [e for e in entries if e.get("event") == "model_call"]
+if calls:
+    spend = sum(float(e.get("usd", 0)) for e in calls)
+    per_decision = spend / len(decisions) if decisions else 0.0
+    st.caption(
+        f"Model spend: **${spend:.2f}** across {len(calls)} calls "
+        f"(${per_decision:.3f} per decision). Entries think harder than exit "
+        "reviews, and a skip with no candidates costs nothing at all."
+    )
+
 if decisions:
     discipline = len(skipped) / len(decisions)
     st.caption(
@@ -124,6 +134,7 @@ label = {
     "exit_review": ("🟠", "Exit review"),
     "submit_failed": ("🔴", "Submit failed"),
     "cycle_error": ("🔴", "Cycle error"),
+    "model_call": ("💭", "Model call"),
 }
 
 show_all = st.checkbox("Include exit reviews and errors", value=False)

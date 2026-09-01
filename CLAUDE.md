@@ -176,9 +176,9 @@ Working agent, dry-run only. Nothing has traded yet.
 **Done**: Alpaca connection (account, positions, chains, stock bars, clock);
 risk gate bodies with real enforcement; gated order executor with
 `dry_run=True` default; JSONL decision journal; put-credit-spread candidate
-finder; LLM brain (`claude-opus-4-8`, structured output) with a deterministic
+finder; LLM brain (`claude-opus-5`, structured output) with a deterministic
 `RuleBasedBrain` fallback; the trading loop; decision-trail dashboard.
-70 tests passing.
+105 tests passing.
 
 **Not started**: MCP wiring, live trading on a competition account, Streamlit
 Cloud deploy, video, deck, write-up.
@@ -199,8 +199,10 @@ Cloud deploy, video, deck, write-up.
 
 ### Known unknowns
 
-- **Alpaca's sign convention for multi-leg credit limit prices is unverified.**
-  Confirm against a real fill on the dev account before going live.
+- ~~Alpaca's sign convention for multi-leg credit limit prices is unverified.~~
+  **Resolved 2026-08-31**: negative is a credit received, positive is a debit
+  paid, both from the account's perspective. Verified against a real fill
+  (limit 0.46 -> filled -0.40); see the comment in `src/main.py`.
 - The `.env` currently holds a teammate's paper keys. The competition account
   must be brand-new and dedicated; that is unresolved.
 

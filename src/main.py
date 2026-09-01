@@ -241,6 +241,24 @@ def closing_limit_price(legs, chain) -> float:
     return round(total, 2)
 
 
+def record_cost(journal, brain, **fields) -> None:
+    """Log what the model just cost, when a model was actually called.
+
+    RuleBasedBrain, a cached skip, and a failed call all report None — the
+    absence of a cost is not zero cost, it is no call, and logging it as a
+    $0.00 row would make the trail lie about how often the model ran.
+    """
+    call = getattr(brain, "last_call", None)
+    if call is None:
+        return
+    journal.record(event="model_call", **call.as_record(), **fields)
+    log(
+        f"  cost: ${call.usd:.3f} "
+        f"({call.input_tokens:,} in / {call.output_tokens:,} out, {call.effort}) "
+        f"· session ${brain.session_usd:.2f}"
+    )
+
+
 # --- one cycle ------------------------------------------------------------
 
 def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
@@ -316,6 +334,10 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
         else:
             entry = last_entry_for(journal, underlying, expiration)
             review = brain.review_exit(describe_position(legs, entry), context)
+            record_cost(
+                journal, brain,
+                underlying=underlying, expiration=expiration.isoformat(),
+            )
             review_action, reasoning = review.action, review.reasoning
             thesis_valid = review.thesis_still_valid
             log(f"  {tag}: {review_action} — {reasoning[:90]}")
@@ -374,6 +396,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
 
     decision = brain.decide_entry(candidates, context, sizer)
     log(f"  brain: {decision.action} ({decision.confidence}) — {decision.reasoning[:90]}")
+    record_cost(journal, brain, underlying=args.symbol, candidates=len(candidates))
 
     if decision.action != "enter":
         journal.record(
@@ -408,7 +431,10 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
 def build_args():
     parser = argparse.ArgumentParser(description="Autonomous options trading agent")
     parser.add_argument("--symbol", default="SPY")
-    parser.add_argument("--interval", type=int, default=300, help="seconds between cycles")
+    parser.add_argument(
+        "--interval", type=int, default=900,
+        help="seconds between cycles; the biggest driver of model spend",
+    )
     parser.add_argument("--once", action="store_true", help="run a single cycle and exit")
     parser.add_argument("--live", action="store_true", help="actually transmit orders")
     parser.add_argument("--brain", choices=("claude", "rules"), default="claude")

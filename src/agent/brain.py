@@ -20,7 +20,42 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-opus-5"
+
+# US dollars per million tokens, input then output. Thinking tokens bill as
+# output, which is why effort is the lever that moves this number. Kept here
+# so the journal can record what a decision actually cost instead of an
+# estimate; an unknown model prices at zero rather than guessing.
+PRICING = {
+    "claude-opus-5": (5.00, 25.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
+
+
+@dataclass(frozen=True)
+class CallCost:
+    """What one model call cost. None whenever no model was called."""
+
+    purpose: str  # "entry" or "exit"
+    model: str
+    effort: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    usd: float
+
+    def as_record(self) -> dict:
+        return {
+            "purpose": self.purpose,
+            "model": self.model,
+            "effort": self.effort,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "usd": round(self.usd, 4),
+        }
 
 
 @dataclass
@@ -137,7 +172,14 @@ def _candidate_lines(candidates, spot: float, max_contracts_fn) -> str:
 
 
 class Brain(ABC):
-    """Swap in a committee, a single analyst, or a rule — the loop does not care."""
+    """Swap in a committee, a single analyst, or a rule — the loop does not care.
+
+    Every brain reports what its last call cost. A brain that calls no model
+    reports None and zero, so the loop logs cost the same way regardless.
+    """
+
+    last_call: CallCost | None = None
+    session_usd: float = 0.0
 
     @abstractmethod
     def decide_entry(self, candidates, context: MarketContext, max_contracts_fn) -> EntryDecision:
@@ -151,28 +193,80 @@ class Brain(ABC):
 class SingleAnalystBrain(Brain):
     """One model, one opinion, structured output."""
 
-    def __init__(self, client=None, model: str = MODEL, effort: str = "high"):
+    def __init__(
+        self,
+        client=None,
+        model: str = MODEL,
+        entry_effort: str = "xhigh",
+        exit_effort: str = "high",
+    ):
+        """Effort is split because the two calls are not the same problem.
+
+        Entries are rare, irreversible, and worth thinking hard about. Exits
+        run once per open position every cycle and ask a narrower question —
+        has a condition written down in advance occurred — so they get the
+        cheaper setting.
+        """
         if client is None:
             import anthropic
 
             client = anthropic.Anthropic()
         self.client = client
         self.model = model
-        self.effort = effort
+        self.entry_effort = entry_effort
+        self.exit_effort = exit_effort
+        self.last_call: CallCost | None = None
+        self.session_usd = 0.0
 
-    def _parse(self, system: str, prompt: str, schema):
+    def _parse(self, system: str, prompt: str, schema, purpose: str, effort: str):
         response = self.client.messages.parse(
             model=self.model,
             max_tokens=16000,
             system=system,
             thinking={"type": "adaptive"},
-            output_config={"effort": self.effort},
+            output_config={"effort": effort},
             messages=[{"role": "user", "content": prompt}],
             output_format=schema,
         )
+        self.last_call = self._price(response, purpose, effort)
+        if self.last_call is not None:
+            self.session_usd += self.last_call.usd
         return response.parsed_output
 
+    def _price(self, response, purpose: str, effort: str) -> CallCost | None:
+        """Cost accounting must never be the thing that breaks a trading loop."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return None
+
+        def count(name: str) -> int:
+            return int(getattr(usage, name, 0) or 0)
+
+        read_in = count("input_tokens")
+        out = count("output_tokens")
+        cache_read = count("cache_read_input_tokens")
+        cache_write = count("cache_creation_input_tokens")
+
+        in_rate, out_rate = PRICING.get(self.model, (0.0, 0.0))
+        usd = (
+            read_in * in_rate
+            + cache_read * in_rate * 0.10  # cached reads bill at a tenth
+            + cache_write * in_rate * 1.25  # writing the cache costs a premium
+            + out * out_rate
+        ) / 1_000_000
+
+        return CallCost(
+            purpose=purpose,
+            model=self.model,
+            effort=effort,
+            input_tokens=read_in + cache_read + cache_write,
+            output_tokens=out,
+            cache_read_tokens=cache_read,
+            usd=usd,
+        )
+
     def decide_entry(self, candidates, context, max_contracts_fn) -> EntryDecision:
+        self.last_call = None  # a skip below costs nothing; do not log the last one twice
         if not candidates:
             return EntryDecision(
                 action="skip",
@@ -190,7 +284,7 @@ class SingleAnalystBrain(Brain):
             "below that candidate's max_contracts."
         )
         try:
-            decision = self._parse(ENTRY_SYSTEM, prompt, EntryDecision)
+            decision = self._parse(ENTRY_SYSTEM, prompt, EntryDecision, "entry", self.entry_effort)
         except Exception as exc:
             return EntryDecision(
                 action="skip",
@@ -202,13 +296,14 @@ class SingleAnalystBrain(Brain):
         return _sanitize_entry(decision, candidates, max_contracts_fn)
 
     def review_exit(self, position_summary: str, context: MarketContext) -> ExitDecision:
+        self.last_call = None
         prompt = (
             f"{context.describe()}\n\n"
             f"The open position and what you said at entry:\n{position_summary}\n\n"
             "Has the invalidation condition occurred? Answer hold or close."
         )
         try:
-            return self._parse(EXIT_SYSTEM, prompt, ExitDecision)
+            return self._parse(EXIT_SYSTEM, prompt, ExitDecision, "exit", self.exit_effort)
         except Exception as exc:
             return ExitDecision(
                 action="hold",

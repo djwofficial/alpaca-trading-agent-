@@ -169,7 +169,7 @@ approved; `_sanitize_entry` clamps whatever the model returns to something legal
 becomes a skip. **The worst a confused model can do is take a legal trade or
 decline to trade.**
 
-- **Judgment model:** a frontier Claude model (Opus-class, `claude-opus-4-8`)
+- **Judgment model:** a frontier Claude model (Opus-class, `claude-opus-5`)
   via the Anthropic structured-output API.
 - **Deterministic fallback:** `RuleBasedBrain` runs with no API key and no
   network, so the loop can be exercised end-to-end and, critically, **a model

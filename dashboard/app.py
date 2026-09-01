@@ -11,6 +11,7 @@ loop, so a crash here cannot touch trading.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,16 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+
+# Locally the keys come from .env; on Streamlit Cloud they arrive as secrets.
+# Bridge them into the environment so the same client code works in both.
+for _name in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_PAPER_TRADE"):
+    if not os.getenv(_name):
+        try:
+            if _name in st.secrets:
+                os.environ[_name] = str(st.secrets[_name])
+        except Exception:
+            pass  # no secrets.toml locally, which is fine
 
 from data.client import (  # noqa: E402
     MissingCredentials,

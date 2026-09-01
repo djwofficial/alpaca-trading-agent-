@@ -219,3 +219,6 @@ __marimo__/
 
 # Agent decision logs
 logs/
+
+# ...but the decision journal IS the demo, and holds no secrets
+!logs/decisions.jsonl

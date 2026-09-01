@@ -173,10 +173,16 @@ def test_opening_legs_use_open_position_intents():
 
 
 def test_closing_legs_use_close_position_intents():
+    """Prevents: an intent that contradicts its own side.
+
+    Selling closes a long, buying closes a short. Pairing side=sell with
+    BUY_TO_CLOSE describes an order that cannot exist; the broker rejects it,
+    the mechanical stop never fills, and the position rides into expiry.
+    """
     order = build_order(spread(), limit_price=0.35, opening=False)
     intents = {leg.side.value: leg.position_intent.value for leg in order.legs}
-    assert intents["sell"] == "buy_to_close"
-    assert intents["buy"] == "sell_to_close"
+    assert intents["sell"] == "sell_to_close"
+    assert intents["buy"] == "buy_to_close"
 
 
 # --- Alpaca's signed limit prices -----------------------------------------

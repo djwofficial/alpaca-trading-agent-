@@ -26,11 +26,18 @@ class Decision:
 
 
 def _leg_request(leg, opening: bool = True) -> OptionLegRequest:
+    """Map a leg's side to the position intent Alpaca expects.
+
+    The intent must agree with the side: selling opens short or closes a long,
+    buying opens long or closes a short. Pairing "sell" with BUY_TO_CLOSE
+    describes an order that cannot exist, and the broker rejects it — which
+    means the mechanical stop fails at exactly the moment it is needed.
+    """
     selling = leg.side == "sell"
     if opening:
         intent = PositionIntent.SELL_TO_OPEN if selling else PositionIntent.BUY_TO_OPEN
     else:
-        intent = PositionIntent.BUY_TO_CLOSE if selling else PositionIntent.SELL_TO_CLOSE
+        intent = PositionIntent.SELL_TO_CLOSE if selling else PositionIntent.BUY_TO_CLOSE
 
     return OptionLegRequest(
         symbol=leg.symbol,

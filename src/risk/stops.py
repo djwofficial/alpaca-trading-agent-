@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 
 CONTRACT_MULTIPLIER = 100
+_OCC_SUFFIX_LENGTH = 15
 
 
 @dataclass
@@ -37,21 +38,51 @@ class SpreadState:
     unrealized_pl: float        # dollars, negative when losing
 
 
+def group_into_spreads(positions) -> dict[tuple[str, date, str], list]:
+    """Group option position rows into individual spreads.
+
+    Keyed by underlying, expiration and option type — the three things that
+    define a vertical.
+
+    Grouping by underlying alone merges every spread on that name into one
+    phantom position: the credit of whichever leg sorted first measured
+    against the P&L of all of them, and a close order sized from a single
+    leg's quantity. The risk gates explicitly permit two spreads per
+    underlying, so that collision is a supported state, not an edge case.
+    """
+    from strategy.spreads import parse_occ
+
+    grouped: dict[tuple[str, date, str], list] = {}
+    for position in positions:
+        if len(position.symbol) <= _OCC_SUFFIX_LENGTH:
+            continue  # equity, not an option
+        underlying, expiration, option_type, _ = parse_occ(position.symbol)
+        grouped.setdefault((underlying, expiration, option_type), []).append(position)
+    return grouped
+
+
 def summarize_spread(legs) -> SpreadState | None:
     """Fold a spread's position rows into one state object.
 
     Returns None when the rows do not form a recognisable spread — a lone leg,
-    or something opened outside this agent.
+    an unbalanced pair, or something opened outside this agent. Refusing to
+    summarise is the safe failure: it leaves the position to the model and to
+    manual review, where guessing would build a close order that does not
+    match what is actually held.
     """
     from strategy.spreads import parse_occ
 
-    short = next((leg for leg in legs if float(leg.qty) < 0), None)
-    long = next((leg for leg in legs if float(leg.qty) > 0), None)
-    if short is None or long is None:
+    shorts = [leg for leg in legs if float(leg.qty) < 0]
+    longs = [leg for leg in legs if float(leg.qty) > 0]
+    if len(shorts) != 1 or len(longs) != 1:
         return None
 
-    underlying, expiration, _, short_strike = parse_occ(short.symbol)
+    short, long = shorts[0], longs[0]
     contracts = int(abs(float(short.qty)))
+    if contracts != int(abs(float(long.qty))):
+        return None  # unbalanced: closing at either size would leave a naked leg
+
+    underlying, expiration, _, short_strike = parse_occ(short.symbol)
 
     credit_per_share = float(short.avg_entry_price) - float(long.avg_entry_price)
     credit_received = credit_per_share * CONTRACT_MULTIPLIER * contracts

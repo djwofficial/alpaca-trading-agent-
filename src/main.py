@@ -18,7 +18,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,62 +42,131 @@ from data.client import (  # noqa: E402
 )
 from execution.orders import OrderExecutor  # noqa: E402
 from journal import Journal  # noqa: E402
-from risk.stops import StopConfig, should_stop_out, summarize_spread  # noqa: E402
+from risk.stops import (  # noqa: E402
+    StopConfig,
+    group_into_spreads,
+    should_stop_out,
+    summarize_spread,
+)
 from risk.gates import (  # noqa: E402
     OptionLeg,
     RiskConfig,
     RiskGate,
     TradeProposal,
-    underlying_from_occ,
 )
 from strategy.spreads import contracts_from_chain, find_put_credit_spreads  # noqa: E402
 
 STATE_PATH = Path(__file__).resolve().parent.parent / "logs" / "state.json"
+LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "agent.log"
 
 
 def log(message: str) -> None:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+    """Write to the terminal and to logs/agent.log.
+
+    The file matters because the terminal does not survive the session. A
+    live run whose stdout goes to a console leaves agent.log frozen at
+    whatever the last redirected run wrote, which reads as a dead agent.
+    """
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+    print(line, flush=True)
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass  # logging must never take the loop down
 
 
 # --- daily baseline -------------------------------------------------------
 
-def starting_equity_for_today(current_equity: float) -> float:
-    """Equity at the session's start, so the kill switch survives a restart."""
-    today = datetime.now(timezone.utc).date().isoformat()
-    state = {}
-    if STATE_PATH.exists():
-        try:
-            state = json.loads(STATE_PATH.read_text())
-        except json.JSONDecodeError:
-            state = {}
+def read_state() -> dict:
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(STATE_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
 
-    if state.get("date") != today:
-        state = {"date": today, "starting_equity": current_equity}
+
+def write_state(**fields) -> None:
+    """Merge fields into the state file. Never raises: state is bookkeeping."""
+    try:
+        state = read_state() | fields
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(state))
+    except OSError:
+        pass
 
-    return float(state["starting_equity"])
+
+def session_baseline(account) -> float:
+    """Equity at the prior session's close, which the daily loss limit is
+    measured against.
+
+    Alpaca reports this as last_equity. Capturing equity at the agent's own
+    first cycle instead makes the reference an arbitrary intraday mark: an
+    overnight gap, or any move before the first cycle ran, is invisible to
+    the kill switch, and a restart mid-drawdown re-baselines the loss away.
+    Falls back to current equity only when the broker omits the field.
+    """
+    try:
+        baseline = float(account.last_equity)
+    except (AttributeError, TypeError, ValueError):
+        baseline = 0.0
+    return baseline if baseline > 0 else float(account.equity)
+
+
+def sync_halt(gate, baseline: float, equity: float) -> None:
+    """Carry the day's halt across restarts.
+
+    RiskGate.halted lives in memory, so without this a halted agent resumes
+    trading the moment the process is restarted — which is exactly what
+    tends to happen after a bad day.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    state = read_state()
+
+    if state.get("date") != today:
+        gate.reset_for_new_day()
+        write_state(date=today, halted=False, halt_reason="")
+    elif state.get("halted") and not gate.halted:
+        gate.halted = True
+        gate.halt_reason = state.get("halt_reason", "Trading halted earlier today")
+
+    was_halted = gate.halted
+    gate.update_daily_pnl(equity, baseline)
+    if gate.halted and not was_halted:
+        write_state(date=today, halted=True, halt_reason=gate.halt_reason)
+
+
+def heartbeat(status: str) -> None:
+    """Stamp the state file every cycle, whatever the outcome.
+
+    Cycles that find nothing to do return without journalling, so a healthy
+    idle agent and a wedged one leave the same trail. This is the liveness
+    signal: logs/state.json always carries the last cycle's time and result.
+    """
+    write_state(last_cycle=datetime.now(timezone.utc).isoformat(), last_status=status)
 
 
 # --- position review ------------------------------------------------------
 
-def option_positions_by_underlying(positions) -> dict[str, list]:
-    grouped: dict[str, list] = {}
-    for position in positions:
-        if len(position.symbol) <= 15:
-            continue  # equity, not an option
-        grouped.setdefault(underlying_from_occ(position.symbol), []).append(position)
-    return grouped
+def last_entry_for(
+    journal: Journal, underlying: str, expiration: date
+) -> dict | None:
+    """The thesis that opened this spread, so its exit can be judged against it.
 
-
-def last_entry_for(journal: Journal, underlying: str) -> dict | None:
-    """The thesis that opened this position, so exits can be judged against it."""
+    Matched on expiration as well as underlying. With two spreads open on one
+    name, matching the underlying alone hands the model the wrong spread's
+    thesis and invalidation condition.
+    """
+    wanted = expiration.isoformat()
     matches = [
         entry
         for entry in journal.read()
         if entry.get("underlying") == underlying
         and entry.get("event") in {"submitted", "dry_run"}
         and entry.get("thesis")
+        and any(leg.get("expiration") == wanted for leg in entry.get("legs", []))
     ]
     return matches[-1] if matches else None
 
@@ -120,8 +189,14 @@ def describe_position(legs, entry: dict | None) -> str:
     return f"{body}\nNo recorded thesis — opened outside this agent."
 
 
-def closing_proposal(legs, underlying: str) -> TradeProposal:
-    """Invert an open spread into the order that flattens it."""
+def closing_proposal(legs, underlying: str, contracts: int) -> TradeProposal:
+    """Invert an open spread into the order that flattens it.
+
+    contracts comes from the summarized spread, not from whichever leg sorted
+    first. Every leg of an MLEG order carries ratio_qty 1, so the order's
+    quantity applies to all of them: sizing from the wrong leg over-closes
+    the other side and opens a fresh naked position in the process.
+    """
     option_legs = []
     for position in legs:
         quantity = float(position.qty)
@@ -138,7 +213,7 @@ def closing_proposal(legs, underlying: str) -> TradeProposal:
     return TradeProposal(
         underlying=underlying,
         legs=tuple(option_legs),
-        contracts=int(abs(float(legs[0].qty))),
+        contracts=contracts,
         max_loss=0.0,
         closing=True,
     )
@@ -174,12 +249,13 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
     clock = fetch_clock(trading)
     if not clock.is_open and not args.ignore_hours:
         log(f"Market closed. Next open {clock.next_open}.")
+        heartbeat("market_closed")
         return
 
     account = fetch_account(trading)
     equity = float(account.equity)
-    baseline = starting_equity_for_today(equity)
-    gate.update_daily_pnl(equity, baseline)
+    baseline = session_baseline(account)
+    sync_halt(gate, baseline, equity)
 
     log(f"Equity ${equity:,.2f} (day {(equity - baseline) / baseline:+.2%})")
     if gate.halted:
@@ -194,7 +270,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
     minutes_to_close = max(
         0, int((clock.next_close - datetime.now(timezone.utc)).total_seconds() // 60)
     )
-    open_by_underlying = option_positions_by_underlying(positions)
+    open_spreads = group_into_spreads(positions)
 
     context = MarketContext(
         symbol=args.symbol,
@@ -202,34 +278,50 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
         prior_close=closes[-2] if len(closes) > 1 else spot,
         recent_closes=closes,
         minutes_to_close=minutes_to_close,
-        open_position_count=len(open_by_underlying),
+        open_position_count=len(open_spreads),
     )
     log(f"{args.symbol} ${spot:,.2f} ({context.session_change_pct:+.2%}), "
-        f"{len(open_by_underlying)} open, {minutes_to_close}m to close")
+        f"{len(open_spreads)} open, {minutes_to_close}m to close")
 
     # --- exits first: freeing risk beats adding it ---
-    for underlying, legs in open_by_underlying.items():
+    for (underlying, expiration, _type), legs in sorted(
+        open_spreads.items(), key=lambda item: item[0][1]
+    ):
+        tag = f"{underlying} {expiration}"
+
         # Mechanical stops run before the model and fire without it. If the
         # API is down or out of credit, this is the only thing standing
         # between an open position and its maximum loss.
         state = summarize_spread(legs)
-        forced, stop_reason = (
-            should_stop_out(state, spot, datetime.now(timezone.utc).date(), stops)
-            if state
-            else (False, "")
+        if state is None:
+            # Not a balanced pair, so there is no close order we can build
+            # that matches what is held. Say so loudly rather than guess.
+            journal.record(
+                event="unmanaged_position",
+                underlying=underlying,
+                expiration=expiration.isoformat(),
+                symbols=[position.symbol for position in legs],
+                reason="legs do not form a balanced spread — stops cannot manage it",
+            )
+            log(f"  {tag}: UNMANAGED — not a balanced spread, needs manual review")
+            continue
+
+        forced, stop_reason = should_stop_out(
+            state, spot, datetime.now(timezone.utc).date(), stops
         )
 
         if forced:
             review_action, reasoning = "close", stop_reason
             thesis_valid = False
         else:
-            review = brain.review_exit(describe_position(legs, last_entry_for(journal, underlying)), context)
+            entry = last_entry_for(journal, underlying, expiration)
+            review = brain.review_exit(describe_position(legs, entry), context)
             review_action, reasoning = review.action, review.reasoning
             thesis_valid = review.thesis_still_valid
-            log(f"  {underlying}: {review_action} — {reasoning[:90]}")
+            log(f"  {tag}: {review_action} — {reasoning[:90]}")
 
         if review_action == "close":
-            proposal = closing_proposal(legs, underlying)
+            proposal = closing_proposal(legs, underlying, state.contracts)
             decision = executor.execute(
                 proposal,
                 account,
@@ -240,14 +332,17 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
             journal.record(
                 event="exit_review",
                 underlying=underlying,
+                expiration=expiration.isoformat(),
+                contracts=state.contracts,
                 mechanical=forced,
                 thesis_still_valid=thesis_valid,
                 reasoning=reasoning,
                 outcome=decision.reason,
             )
-            log(f"  {underlying}: CLOSE — {reasoning[:70]} | {decision.reason}")
+            log(f"  {tag}: CLOSE — {reasoning[:70]} | {decision.reason}")
 
     if gate.halted:
+        heartbeat("halted")
         return
 
     # --- entries ---
@@ -260,6 +355,13 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
     )
     log(f"  {len(candidates)} candidates")
     if not candidates:
+        journal.record(
+            event="no_candidates",
+            underlying=args.symbol,
+            spot=spot,
+            reason="chain produced no spread inside the cushion band",
+        )
+        heartbeat("no_candidates")
         return
 
     config = gate.config
@@ -282,6 +384,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
             reasoning=decision.reasoning,
             confidence=decision.confidence,
         )
+        heartbeat("skipped")
         return
 
     candidate = candidates[decision.candidate_index]
@@ -297,6 +400,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
         proposal, account, positions, limit_price=-round(candidate.credit, 2)
     )
     log(f"  {result.reason}")
+    heartbeat("entry_attempted")
 
 
 # --- entry point ----------------------------------------------------------

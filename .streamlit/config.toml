@@ -1,0 +1,17 @@
+# Dark theme, fixed. The palette is the validated dark set: surfaces #0d0d0d /
+# #1a1a19, ink #ffffff / #c3c2b7, and a blue primary that clears 3:1 on both.
+# Judges open this on whatever machine they have — the look should not depend
+# on their OS theme setting.
+[theme]
+base = "dark"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#ffffff"
+primaryColor = "#3987e5"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

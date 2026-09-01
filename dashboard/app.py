@@ -105,11 +105,12 @@ d.metric("Blocked by risk gates", len(rejected))
 calls = [e for e in entries if e.get("event") == "model_call"]
 if calls:
     spend = sum(float(e.get("usd", 0)) for e in calls)
-    per_decision = spend / len(decisions) if decisions else 0.0
+    entries_spend = sum(float(e.get("usd", 0)) for e in calls if e.get("purpose") == "entry")
     st.caption(
         f"Model spend: **${spend:.2f}** across {len(calls)} calls "
-        f"(${per_decision:.3f} per decision). Entries think harder than exit "
-        "reviews, and a skip with no candidates costs nothing at all."
+        f"(${spend / len(calls):.3f} each; ${entries_spend:.2f} of it on entry "
+        "decisions, which think harder than exit reviews). A skip with no "
+        "candidates calls nothing and costs nothing."
     )
 
 if decisions:

@@ -19,6 +19,7 @@ import json
 import sys
 import time
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -55,7 +56,7 @@ from risk.gates import (  # noqa: E402
     RiskGate,
     TradeProposal,
 )
-from strategy.spreads import contracts_from_chain, find_put_credit_spreads  # noqa: E402
+from strategy.spreads import find_put_credit_spreads  # noqa: E402
 
 STATE_PATH = Path(__file__).resolve().parent.parent / "logs" / "state.json"
 LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "agent.log"
@@ -137,6 +138,29 @@ def sync_halt(gate, baseline: float, equity: float) -> None:
     gate.update_daily_pnl(equity, baseline)
     if gate.halted and not was_halted:
         write_state(date=today, halted=True, halt_reason=gate.halt_reason)
+
+
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def market_date(clock) -> date:
+    """Today's date on the exchange's calendar, not on this machine's.
+
+    Expiry is counted against the trading calendar, so the machine's clock is
+    the wrong authority — this laptop runs eight hours ahead of the exchange.
+    The broker's own timestamp is authoritative and is already fetched every
+    cycle; US/Eastern is the fallback for a clock that comes back without a
+    usable timestamp.
+
+    A UTC date agrees with Eastern during the session and runs a day ahead
+    for the four hours after midnight UTC, which is enough for an overnight
+    --ignore-hours run to count an expiry a day early and flatten a position
+    a session before it needed to.
+    """
+    stamp = getattr(clock, "timestamp", None)
+    if stamp is not None and getattr(stamp, "tzinfo", None) is not None:
+        return stamp.date()
+    return datetime.now(MARKET_TZ).date()
 
 
 def heartbeat(status: str) -> None:
@@ -316,6 +340,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
         0, int((clock.next_close - datetime.now(timezone.utc)).total_seconds() // 60)
     )
     open_spreads = group_into_spreads(positions)
+    today = market_date(clock)
 
     context = MarketContext(
         symbol=args.symbol,
@@ -353,9 +378,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
             log(f"  {tag}: UNMANAGED — not a balanced spread, needs manual review")
             continue
 
-        forced, stop_reason = should_stop_out(
-            state, spot, datetime.now(timezone.utc).date(), stops
-        )
+        forced, stop_reason = should_stop_out(state, spot, today, stops)
 
         if forced:
             review_action, reasoning = "close", stop_reason
@@ -436,6 +459,23 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
             candidate.max_contracts(equity, config.max_position_pct),
             config.max_contracts_per_order,
         )
+
+    # The open-position caps depend only on the book, so when they are full
+    # every candidate is rejected no matter which one the model picks. Asking
+    # anyway is a bill for a judgement that cannot be acted on — and it is the
+    # reason a capped agent looks expensive to leave running on the real brain.
+    room, capacity_reason = gate.has_capacity(args.symbol, positions)
+    if not room:
+        log(f"  {capacity_reason}")
+        journal.record(
+            event="at_capacity",
+            underlying=args.symbol,
+            spot=spot,
+            candidates=len(candidates),
+            reason=capacity_reason,
+        )
+        heartbeat("at_capacity")
+        return
 
     decision = brain.decide_entry(candidates, context, sizer)
     log(f"  brain: {decision.action} ({decision.confidence}) — {decision.reasoning[:90]}")

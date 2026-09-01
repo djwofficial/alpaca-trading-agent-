@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -135,7 +136,10 @@ def fetch_option_chain(
     Returns few or no quotes when the market is closed. That is expected,
     not a failure.
     """
-    today = date.today()
+    # The exchange's date, not the machine's. A day ahead here drops contracts
+    # expiring on the current session — including ones we are holding, whose
+    # quotes the close order needs in order to be priced at all.
+    today = datetime.now(ZoneInfo("America/New_York")).date()
     request = OptionChainRequest(
         underlying_symbol=underlying,
         expiration_date_gte=today,

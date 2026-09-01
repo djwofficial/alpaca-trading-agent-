@@ -166,6 +166,9 @@ class RiskGate:
         return True, ""
 
     def _check_open_positions(self, proposal, account, positions) -> tuple[bool, str]:
+        return self.has_capacity(proposal.underlying, positions)
+
+    def has_capacity(self, underlying: str, positions) -> tuple[bool, str]:
         """Bound both the number of open spreads and how many sit on one name.
 
         Each defined-risk spread has exactly one short leg, so counting short
@@ -175,6 +178,11 @@ class RiskGate:
         The per-underlying cap is the one that matters. Five spreads on five
         different names are five bets; five spreads on SPY are one bet at five
         times the size, and the per-position risk cap cannot see that.
+
+        Public because it depends only on the book, never on the proposal. The
+        loop checks it before consulting the model: when there is no room, every
+        candidate is rejected regardless of which one the model would pick, so
+        asking is spending money on a judgement that cannot be acted on.
         """
         short_legs = [
             position
@@ -192,12 +200,12 @@ class RiskGate:
         same_name = [
             position
             for position in short_legs
-            if underlying_from_occ(position.symbol) == proposal.underlying
+            if underlying_from_occ(position.symbol) == underlying
         ]
         limit = self.config.max_spreads_per_underlying
         if len(same_name) >= limit:
             return False, (
-                f"Already holding {len(same_name)} spreads on {proposal.underlying} — "
+                f"Already holding {len(same_name)} spreads on {underlying} — "
                 f"limit is {limit} per underlying. Stacking one name concentrates "
                 f"risk the per-position cap cannot see."
             )

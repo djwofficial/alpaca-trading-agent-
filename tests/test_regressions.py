@@ -223,3 +223,82 @@ def test_the_thesis_lookup_distinguishes_two_spreads_at_one_expiration(tmp_path)
     assert last_entry_for(journal, "SPY", date(2026, 9, 8), 750.0)["thesis"] == "750 holds"
     assert last_entry_for(journal, "SPY", date(2026, 9, 8), 740.0)["thesis"] == "740 holds"
     assert last_entry_for(journal, "SPY", date(2026, 9, 8), 999.0) is None
+
+
+# --- Bug 5: the machine's date is not the exchange's date -----------------
+
+def test_market_date_prefers_the_broker_clock():
+    """This laptop runs eight hours ahead of the exchange; the broker's own
+    timestamp is the authority on what day the market thinks it is."""
+    from datetime import datetime, timezone as tz
+    from main import market_date
+
+    @dataclass
+    class FakeClock:
+        timestamp: object
+
+    eastern = tz(__import__("datetime").timedelta(hours=-4))
+    # 22:00 on Sep 1 in New York is already Sep 2 in UTC.
+    clock = FakeClock(datetime(2026, 9, 1, 22, 0, tzinfo=eastern))
+    assert market_date(clock) == date(2026, 9, 1)
+    assert clock.timestamp.astimezone(tz.utc).date() == date(2026, 9, 2)
+
+
+def test_market_date_falls_back_when_the_clock_has_no_usable_stamp():
+    from main import market_date
+
+    @dataclass
+    class Naive:
+        timestamp: object
+
+    assert isinstance(market_date(Naive(None)), date)
+    assert isinstance(market_date(object()), date)
+
+
+# --- Cost: never pay for a decision the gates will reject -----------------
+
+def test_capacity_is_a_book_only_question():
+    """has_capacity takes an underlying, not a proposal, because that is the
+    point: when the caps are full every candidate is rejected regardless of
+    which one the model would have picked."""
+    gate = RiskGate(RiskConfig(max_spreads_per_underlying=2))
+    book = [
+        FakePosition("SPY260908P00750000", "-3"),
+        FakePosition("SPY260908P00745000", "3"),
+        FakePosition("SPY260903P00757000", "-5"),
+        FakePosition("SPY260903P00752000", "5"),
+    ]
+    room, why = gate.has_capacity("SPY", book)
+    assert room is False and "limit is 2 per underlying" in why
+
+    room, _ = gate.has_capacity("QQQ", book)
+    assert room is True, "a different underlying still has room"
+
+    room, _ = gate.has_capacity("SPY", [])
+    assert room is True, "an empty book always has room"
+
+
+def test_the_gate_still_enforces_capacity_on_the_full_check():
+    """The pre-check is an optimisation, not a replacement — a proposal that
+    reaches the gates must still be rejected."""
+    gate = RiskGate(RiskConfig(max_spreads_per_underlying=2))
+    book = [
+        FakePosition("SPY260908P00750000", "-3"),
+        FakePosition("SPY260903P00757000", "-5"),
+    ]
+
+    @dataclass
+    class FakeAccount:
+        equity: str = "100000"
+
+    proposal = TradeProposal(
+        underlying="SPY",
+        legs=(
+            OptionLeg("SPY260910P00740000", "sell", "put", 740.0, "2026-09-10"),
+            OptionLeg("SPY260910P00735000", "buy", "put", 735.0, "2026-09-10"),
+        ),
+        contracts=1,
+        max_loss=400.0,
+    )
+    approved, why = gate.check(proposal, FakeAccount(), book)
+    assert approved is False and "per underlying" in why

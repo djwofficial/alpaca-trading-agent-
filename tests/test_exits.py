@@ -37,8 +37,10 @@ class FakePosition:
 
 # The account as it actually stood: a 9/3 757/752 spread in 5 contracts and a
 # 9/8 750/745 spread in 3, returned in Alpaca's ordering.
-SPREAD_A = ("SPY", date(2026, 9, 3), "put")
-SPREAD_B = ("SPY", date(2026, 9, 8), "put")
+# Keyed by short strike as well, so two spreads sharing an expiration stay
+# distinct instead of merging into one four-legged phantom.
+SPREAD_A = ("SPY", date(2026, 9, 3), "put", 757.0)
+SPREAD_B = ("SPY", date(2026, 9, 8), "put", 750.0)
 
 
 def live_positions() -> list[FakePosition]:

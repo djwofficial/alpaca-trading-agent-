@@ -222,3 +222,6 @@ logs/
 
 # ...but the decision journal IS the demo, and holds no secrets
 !logs/decisions.jsonl
+
+# macOS finder droppings
+.DS_Store

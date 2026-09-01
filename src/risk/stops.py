@@ -38,26 +38,81 @@ class SpreadState:
     unrealized_pl: float        # dollars, negative when losing
 
 
-def group_into_spreads(positions) -> dict[tuple[str, date, str], list]:
+def _strike_of(position) -> float:
+    from strategy.spreads import parse_occ
+
+    return parse_occ(position.symbol)[3]
+
+
+def _pair_by_strike(option_type: str, shorts: list, longs: list) -> tuple[list, list]:
+    """Match each short leg to the long that actually protects it.
+
+    A put is protected by a lower strike, a call by a higher one. Innermost
+    shorts are matched first and claim their nearest protection, so two
+    spreads sharing an expiration resolve to the pairs that were actually
+    opened rather than to a crossed pairing that spans both.
+
+    Anything left over — a naked short, a stray long, an inverted pair — is
+    returned unpaired. It is not this function's job to invent a spread that
+    is not there.
+    """
+    is_put = option_type == "put"
+    unclaimed = list(longs)
+    pairs: list = []
+    orphans: list = []
+
+    for short in sorted(shorts, key=_strike_of, reverse=is_put):
+        strike = _strike_of(short)
+        eligible = [
+            leg for leg in unclaimed
+            if (_strike_of(leg) < strike if is_put else _strike_of(leg) > strike)
+        ]
+        if not eligible:
+            orphans.append(short)
+            continue
+        partner = max(eligible, key=_strike_of) if is_put else min(eligible, key=_strike_of)
+        unclaimed.remove(partner)
+        pairs.append([short, partner])
+
+    orphans.extend(unclaimed)
+    return pairs, orphans
+
+
+def group_into_spreads(positions) -> dict[tuple[str, date, str, float | None], list]:
     """Group option position rows into individual spreads.
 
-    Keyed by underlying, expiration and option type — the three things that
-    define a vertical.
+    Keyed by underlying, expiration, option type and short strike. The strike
+    is what makes the key unique per spread: the risk gates permit two spreads
+    on one underlying and the candidate finder enumerates every expiration in
+    the chain, so two spreads sharing an expiration is a supported state, not
+    an edge case. Keyed without the strike they merge into one four-legged
+    phantom that summarizes to None — which reads as "unmanaged" and quietly
+    takes both spreads out of the mechanical stops.
 
-    Grouping by underlying alone merges every spread on that name into one
-    phantom position: the credit of whichever leg sorted first measured
-    against the P&L of all of them, and a close order sized from a single
-    leg's quantity. The risk gates explicitly permit two spreads per
-    underlying, so that collision is a supported state, not an edge case.
+    Legs that do not pair off are grouped under a None strike so they still
+    surface as unmanaged rather than vanishing.
     """
     from strategy.spreads import parse_occ
 
-    grouped: dict[tuple[str, date, str], list] = {}
+    buckets: dict[tuple[str, date, str], list] = {}
     for position in positions:
         if len(position.symbol) <= _OCC_SUFFIX_LENGTH:
             continue  # equity, not an option
         underlying, expiration, option_type, _ = parse_occ(position.symbol)
-        grouped.setdefault((underlying, expiration, option_type), []).append(position)
+        buckets.setdefault((underlying, expiration, option_type), []).append(position)
+
+    grouped: dict[tuple[str, date, str, float | None], list] = {}
+    for (underlying, expiration, option_type), legs in buckets.items():
+        shorts = [leg for leg in legs if float(leg.qty) < 0]
+        longs = [leg for leg in legs if float(leg.qty) > 0]
+        pairs, orphans = _pair_by_strike(option_type, shorts, longs)
+
+        for short, long in pairs:
+            key = (underlying, expiration, option_type, _strike_of(short))
+            grouped[key] = [short, long]
+        if orphans:
+            grouped[(underlying, expiration, option_type, None)] = orphans
+
     return grouped
 
 
@@ -82,7 +137,14 @@ def summarize_spread(legs) -> SpreadState | None:
     if contracts != int(abs(float(long.qty))):
         return None  # unbalanced: closing at either size would leave a naked leg
 
-    underlying, expiration, _, short_strike = parse_occ(short.symbol)
+    underlying, expiration, option_type, short_strike = parse_occ(short.symbol)
+    long_strike = parse_occ(long.symbol)[3]
+
+    # A long leg on the wrong side of the short caps nothing. Summarizing it
+    # as a spread would hand the stops a max loss that does not exist.
+    protective = long_strike < short_strike if option_type == "put" else long_strike > short_strike
+    if not protective:
+        return None
 
     credit_per_share = float(short.avg_entry_price) - float(long.avg_entry_price)
     credit_received = credit_per_share * CONTRACT_MULTIPLIER * contracts

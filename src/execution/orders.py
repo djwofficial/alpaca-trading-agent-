@@ -17,6 +17,24 @@ from alpaca.trading.enums import (
 from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
 
 
+def working_order_symbols(orders) -> set[str]:
+    """Every contract symbol touched by an order that is still working.
+
+    Multi-leg orders carry their symbols on the legs; single-leg orders carry
+    one on the order itself. Both shapes appear on the same endpoint.
+    """
+    symbols: set[str] = set()
+    for order in orders or ():
+        legs = getattr(order, "legs", None) or ()
+        if legs:
+            symbols.update(
+                str(leg.symbol) for leg in legs if getattr(leg, "symbol", None)
+            )
+        elif getattr(order, "symbol", None):
+            symbols.add(str(order.symbol))
+    return symbols
+
+
 @dataclass
 class Decision:
     approved: bool
@@ -78,8 +96,34 @@ class OrderExecutor:
         positions,
         limit_price: float,
         opening: bool = True,
+        open_orders=(),
     ) -> Decision:
-        """Gate the proposal, log the verdict, and place it only if allowed."""
+        """Gate the proposal, log the verdict, and place it only if allowed.
+
+        The duplicate check runs before the gates because it is not a risk
+        judgement — it is idempotency. Closing orders bypass every gate by
+        design, so a stop firing each cycle while its close order is still
+        working would otherwise submit a fresh order every cycle; if two of
+        them fill, the second does not close anything, it opens the inverted
+        spread.
+        """
+        contested = working_order_symbols(open_orders) & {
+            leg.symbol for leg in proposal.legs
+        }
+        if contested:
+            reason = (
+                f"An order is already working on {', '.join(sorted(contested))} — "
+                f"not submitting a second one."
+            )
+            self.journal.record(
+                event="duplicate_suppressed",
+                underlying=proposal.underlying,
+                symbols=sorted(contested),
+                closing=proposal.closing,
+                reason=reason,
+            )
+            return Decision(approved=False, reason=reason)
+
         approved, reason = self.gate.check(proposal, account, positions)
 
         entry = {

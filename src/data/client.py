@@ -21,7 +21,8 @@ from alpaca.data.requests import (
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import GetOptionContractsRequest
+from alpaca.trading.enums import QueryOrderStatus
+from alpaca.trading.requests import GetOptionContractsRequest, GetOrdersRequest
 
 load_dotenv()
 
@@ -87,6 +88,18 @@ def fetch_account(client: TradingClient):
 def fetch_positions(client: TradingClient) -> list:
     """Open positions. An empty list is a valid, healthy result."""
     return client.get_all_positions()
+
+
+def fetch_open_orders(client: TradingClient) -> list:
+    """Orders that are still working.
+
+    A submitted order is not a position yet. Without this, an order sitting
+    unfilled is invisible to the next cycle, which re-decides from a book
+    that does not include it and submits the same trade again.
+    """
+    return list(
+        client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
+    )
 
 
 def fetch_option_contracts(

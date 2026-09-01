@@ -32,6 +32,7 @@ from data.client import (  # noqa: E402
     fetch_account,
     fetch_clock,
     fetch_daily_bars,
+    fetch_open_orders,
     fetch_option_chain,
     fetch_positions,
     fetch_spot,
@@ -151,22 +152,40 @@ def heartbeat(status: str) -> None:
 # --- position review ------------------------------------------------------
 
 def last_entry_for(
-    journal: Journal, underlying: str, expiration: date
+    journal: Journal,
+    underlying: str,
+    expiration: date,
+    short_strike: float | None = None,
 ) -> dict | None:
     """The thesis that opened this spread, so its exit can be judged against it.
 
-    Matched on expiration as well as underlying. With two spreads open on one
-    name, matching the underlying alone hands the model the wrong spread's
-    thesis and invalidation condition.
+    Matched on the short strike as well as the expiration. Two spreads can
+    share an underlying and an expiration, and matching more loosely hands
+    the model the other spread's thesis and invalidation condition — which it
+    will then faithfully evaluate against the wrong position.
     """
     wanted = expiration.isoformat()
+
+    def is_this_spread(entry: dict) -> bool:
+        legs = entry.get("legs", [])
+        if not any(leg.get("expiration") == wanted for leg in legs):
+            return False
+        if short_strike is None:
+            return True
+        return any(
+            leg.get("side") == "sell"
+            and leg.get("strike") is not None
+            and abs(float(leg["strike"]) - short_strike) < 1e-6
+            for leg in legs
+        )
+
     matches = [
         entry
         for entry in journal.read()
         if entry.get("underlying") == underlying
         and entry.get("event") in {"submitted", "dry_run"}
         and entry.get("thesis")
-        and any(leg.get("expiration") == wanted for leg in entry.get("legs", []))
+        and is_this_spread(entry)
     ]
     return matches[-1] if matches else None
 
@@ -226,18 +245,25 @@ def _parse(symbol: str):
     return underlying, expiration.isoformat(), option_type, strike
 
 
-def closing_limit_price(legs, chain) -> float:
-    """Net debit to flatten: buy back the short at the ask, sell the long at the bid."""
+def closing_limit_price(legs, chain) -> float | None:
+    """Net debit to flatten: buy back the short at the ask, sell the long at the bid.
+
+    Returns None when any leg has no usable quote. Falling back to 0.0 sends a
+    limit order offering to pay nothing, which never fills — and the caller
+    then logs a successful close over a position that is still open. A stop
+    that cannot be priced has to say so, not report success.
+    """
     total = 0.0
     for position in legs:
         snapshot = chain.get(position.symbol)
         quote = getattr(snapshot, "latest_quote", None)
         if quote is None:
-            return 0.0
-        if float(position.qty) < 0:
-            total += float(quote.ask_price or 0)
-        else:
-            total -= float(quote.bid_price or 0)
+            return None
+        short = float(position.qty) < 0
+        price = quote.ask_price if short else quote.bid_price
+        if not price:
+            return None
+        total += float(price) if short else -float(price)
     return round(total, 2)
 
 
@@ -280,6 +306,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
         log(f"HALTED: {gate.halt_reason}")
 
     positions = fetch_positions(trading)
+    open_orders = fetch_open_orders(trading)
     spot = fetch_spot(stocks, args.symbol)
     bars = fetch_daily_bars(stocks, args.symbol, days=6)
     chain = fetch_option_chain(options, args.symbol, days_out=args.days_out)
@@ -302,10 +329,12 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
         f"{len(open_spreads)} open, {minutes_to_close}m to close")
 
     # --- exits first: freeing risk beats adding it ---
-    for (underlying, expiration, _type), legs in sorted(
-        open_spreads.items(), key=lambda item: item[0][1]
+    for (underlying, expiration, _type, key_strike), legs in sorted(
+        open_spreads.items(), key=lambda item: (item[0][1], item[0][3] or 0.0)
     ):
         tag = f"{underlying} {expiration}"
+        if key_strike is not None:
+            tag += f" {key_strike:g}"
 
         # Mechanical stops run before the model and fire without it. If the
         # API is down or out of credit, this is the only thing standing
@@ -332,7 +361,7 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
             review_action, reasoning = "close", stop_reason
             thesis_valid = False
         else:
-            entry = last_entry_for(journal, underlying, expiration)
+            entry = last_entry_for(journal, underlying, expiration, state.short_strike)
             review = brain.review_exit(describe_position(legs, entry), context)
             record_cost(
                 journal, brain,
@@ -342,26 +371,40 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
             thesis_valid = review.thesis_still_valid
             log(f"  {tag}: {review_action} — {reasoning[:90]}")
 
+        outcome = ""
         if review_action == "close":
-            proposal = closing_proposal(legs, underlying, state.contracts)
-            decision = executor.execute(
-                proposal,
-                account,
-                positions,
-                limit_price=closing_limit_price(legs, chain),
-                opening=False,
-            )
-            journal.record(
-                event="exit_review",
-                underlying=underlying,
-                expiration=expiration.isoformat(),
-                contracts=state.contracts,
-                mechanical=forced,
-                thesis_still_valid=thesis_valid,
-                reasoning=reasoning,
-                outcome=decision.reason,
-            )
-            log(f"  {tag}: CLOSE — {reasoning[:70]} | {decision.reason}")
+            limit = closing_limit_price(legs, chain)
+            if limit is None:
+                outcome = "no usable quote on every leg — the close could not be priced"
+                log(f"  {tag}: CLOSE BLOCKED — {outcome}")
+            else:
+                proposal = closing_proposal(legs, underlying, state.contracts)
+                decision = executor.execute(
+                    proposal,
+                    account,
+                    positions,
+                    limit_price=limit,
+                    opening=False,
+                    open_orders=open_orders,
+                )
+                outcome = decision.reason
+                log(f"  {tag}: CLOSE — {reasoning[:70]} | {decision.reason}")
+
+        # Recorded for holds too. The model was consulted and billed either
+        # way, and an exit review that decided to hold is a decision — the
+        # trail is meant to show the reasoning, not only the trades.
+        journal.record(
+            event="exit_review",
+            underlying=underlying,
+            expiration=expiration.isoformat(),
+            short_strike=state.short_strike,
+            contracts=state.contracts,
+            action=review_action,
+            mechanical=forced,
+            thesis_still_valid=thesis_valid,
+            reasoning=reasoning,
+            outcome=outcome,
+        )
 
     if gate.halted:
         heartbeat("halted")
@@ -420,7 +463,9 @@ def run_cycle(args, clients, gate, brain, executor, journal, stops) -> None:
     # number here would tell the broker we are willing to PAY that much to open
     # a credit spread.
     result = executor.execute(
-        proposal, account, positions, limit_price=-round(candidate.credit, 2)
+        proposal, account, positions,
+        limit_price=-round(candidate.credit, 2),
+        open_orders=open_orders,
     )
     log(f"  {result.reason}")
     heartbeat("entry_attempted")

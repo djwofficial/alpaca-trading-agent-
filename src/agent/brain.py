@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-MODEL = "claude-opus-5"
+MODEL = "claude-opus-4-8"
 
 
 @dataclass

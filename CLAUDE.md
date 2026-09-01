@@ -176,7 +176,7 @@ Working agent, dry-run only. Nothing has traded yet.
 **Done**: Alpaca connection (account, positions, chains, stock bars, clock);
 risk gate bodies with real enforcement; gated order executor with
 `dry_run=True` default; JSONL decision journal; put-credit-spread candidate
-finder; LLM brain (`claude-opus-5`, structured output) with a deterministic
+finder; LLM brain (`claude-opus-4-8`, structured output) with a deterministic
 `RuleBasedBrain` fallback; the trading loop; decision-trail dashboard.
 70 tests passing.
 

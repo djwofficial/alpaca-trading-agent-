@@ -386,7 +386,13 @@ except Exception as exc:
 # The loop stamps logs/state.json every cycle. Nothing else reports liveness,
 # and a stopped loop looks exactly like a quiet one without it — which matters
 # because the mechanical stops only run while the process does.
+#
+# state.json is gitignored, so a hosted deploy never has it. There we fall back
+# to the newest journal line (which IS committed) — it answers "when did the
+# agent last decide something", not "is the process up", so it is labelled as
+# such and never escalates to a red STOPPED.
 age_min = None
+liveness_from = "cycle"
 halted = False
 stale_halt_date = ""
 try:
@@ -410,13 +416,27 @@ except Exception:
     pass
 
 if age_min is None:
-    live_colour, live_text = MUTED, "No cycle recorded"
+    try:
+        last = json.loads(
+            (ROOT / "logs" / "decisions.jsonl").read_text().splitlines()[-1]
+        )
+        age_min = (
+            datetime.now(timezone.utc) - datetime.fromisoformat(last["timestamp"])
+        ).total_seconds() / 60
+        liveness_from = "decision"
+    except Exception:
+        pass
+
+if age_min is None:
+    live_colour, live_text = MUTED, "No activity recorded yet"
 elif age_min <= 20:
-    live_colour, live_text = GOOD, f"Agent live · last cycle {age_min:.0f}m ago"
+    live_colour, live_text = GOOD, f"Agent live · last {liveness_from} {age_min:.0f}m ago"
 elif age_min <= 90:
-    live_colour, live_text = WARN, f"Quiet for {age_min:.0f}m — check the loop"
-else:
+    live_colour, live_text = WARN, f"Last {liveness_from} {age_min:.0f}m ago"
+elif liveness_from == "cycle":
     live_colour, live_text = CRIT, f"STOPPED · no cycle in {age_min / 60:.1f}h"
+else:
+    live_colour, live_text = MUTED, f"Decision trail last updated {age_min / 60:.0f}h ago"
 
 st.markdown(
     '<div class="hd"><h1 class="t">Autonomous options agent</h1>'

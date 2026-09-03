@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -45,13 +46,15 @@ from data.client import (  # noqa: E402
     trading_client,
 )
 from journal import Journal  # noqa: E402
-from risk.gates import RiskConfig  # noqa: E402
+from risk.gates import RiskConfig, underlying_from_occ  # noqa: E402
 from risk.stops import (  # noqa: E402
     StopConfig,
     group_into_spreads,
     should_stop_out,
     summarize_spread,
 )
+
+OCC_SUFFIX_LENGTH = 15  # SPY260904P00765000 -> the last 15 chars are the contract
 
 st.set_page_config(
     page_title="Options Agent",
@@ -127,8 +130,23 @@ def money(value, sign: bool = False) -> str:
         amount = float(value)
     except (TypeError, ValueError):
         return "—"
-    lead = "+" if sign and amount >= 0 else ""
-    return f"{lead}${amount:,.2f}"
+    lead = "-" if amount < 0 else ("+" if sign else "")
+    return f"{lead}${abs(amount):,.2f}"
+
+
+def first_sentence(text: str) -> str:
+    """The headline clause of a stop reason, without cutting a number in half.
+
+    Splitting on "." alone lands inside "$450.00" and renders "down $450".
+    Sentences here always end with a space, so that is the boundary to use.
+    """
+    head = text.strip().split(". ")[0].strip()
+    return head.rstrip(".") if head else text.strip()
+
+
+def is_option(symbol: str) -> bool:
+    """OCC symbols carry a fixed 15-character suffix; equities do not."""
+    return len(symbol) > OCC_SUFFIX_LENGTH
 
 
 def tile(label: str, value: str, sub: str = "", colour: str = INK) -> str:
@@ -145,6 +163,24 @@ def meter(used: float, limit: float, colour: str) -> str:
         f'<div class="meter"><div class="fill" '
         f'style="width:{pct * 100:.0f}%; background:{colour}"></div></div>'
     )
+
+
+@st.cache_data(ttl=90, show_spinner=False)
+def agent_start() -> datetime | None:
+    """When the agent first logged a decision, in UTC.
+
+    The equity curve is indexed from here. An account funded before the agent
+    ran carries a flat stretch that is not performance, and indexing to it
+    understates every later move against SPY.
+    """
+    stamps = [e.get("timestamp") for e in Journal().read()]
+    for stamp in stamps:
+        try:
+            when = datetime.fromisoformat(str(stamp))
+        except (TypeError, ValueError):
+            continue
+        return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    return None
 
 
 @st.cache_data(ttl=90, show_spinner=False)
@@ -170,6 +206,19 @@ def performance_series() -> pd.DataFrame | None:
         for stamp, value in zip(history.timestamp, history.equity)
         if value
     ]
+    # A week is the widest the request can be; the agent may be younger than
+    # that, so drop the marks from before it ran. Keeping the last point at or
+    # before the start means the curve opens at the equity it inherited rather
+    # than mid-move. If the trim leaves nothing to plot, the full week is the
+    # honest fallback and the caption below says so.
+    started = agent_start()
+    if started:
+        trimmed = [pt for pt in points if pt[0] >= started]
+        prior = [pt for pt in points if pt[0] < started]
+        if prior:
+            trimmed.insert(0, prior[-1])
+        if len(trimmed) >= 2:
+            points = trimmed
     if len(points) < 2:
         return None
     equity = pd.Series([v for _, v in points], index=[t for t, _ in points])
@@ -290,22 +339,44 @@ def position_strip(long_strike, short_strike, breakeven, spot, colour) -> str:
     )
 
 
+def paired_spreads(rows) -> dict:
+    """Only the buckets that actually pair off into a spread.
+
+    group_into_spreads files unpaired legs under a None strike so they surface
+    as unmanaged. That bucket is a problem to flag, not a spread to count.
+    """
+    return {
+        key: legs
+        for key, legs in group_into_spreads(rows).items()
+        if key[3] is not None
+    }
+
+
 # --- live book ------------------------------------------------------------
 
 account = None
 positions: list = []
 creds = None
 spot = None
+spots: dict[str, float] = {}
+book_known = False  # did the positions call actually answer?
 data_error = ""
 try:
     creds = load_credentials()
     client = trading_client(creds)
     account = fetch_account(client)
     positions = fetch_positions(client)
-    try:
-        spot = fetch_spot(stock_data_client(creds), "SPY")
-    except Exception:
-        spot = None  # quotes go quiet out of hours; the book still renders
+    book_known = True
+    # One quote per underlying held, not one for SPY applied to everything:
+    # a spread on another name judged against SPY's price is a false reading.
+    data_client = stock_data_client(creds)
+    held = {underlying_from_occ(p.symbol) for p in positions if is_option(p.symbol)}
+    for name in held | {"SPY"}:  # SPY too: the header tile always quotes it
+        try:
+            spots[name] = fetch_spot(data_client, name)
+        except Exception:
+            pass  # quotes go quiet out of hours; the book still renders
+    spot = spots.get("SPY")
 except MissingCredentials:
     data_error = "No Alpaca keys configured — showing the decision trail only."
 except Exception as exc:
@@ -317,9 +388,19 @@ except Exception as exc:
 # because the mechanical stops only run while the process does.
 age_min = None
 halted = False
+stale_halt_date = ""
 try:
     state = json.loads((ROOT / "logs" / "state.json").read_text())
-    halted = bool(state.get("halted"))
+    # sync_halt stamps the halt with the UTC date it fired on and clears it on
+    # the first cycle of the next session. run_cycle returns at the
+    # market-closed check before reaching sync_halt, so the flag outlives the
+    # day it belongs to across the whole pre-market. Read the date with it.
+    today_utc = datetime.now(timezone.utc).date().isoformat()
+    if state.get("halted"):
+        if state.get("date") == today_utc:
+            halted = True
+        else:
+            stale_halt_date = str(state.get("date") or "an earlier session")
     stamp = state.get("last_cycle")
     if stamp:
         age_min = (
@@ -354,6 +435,11 @@ if data_error:
     st.warning(data_error)
 if halted:
     st.error("Kill switch tripped — entries halted for the day. Exits still run.")
+elif stale_halt_date:
+    st.info(
+        f"Kill switch tripped on {stale_halt_date}. It clears on the first "
+        "cycle of the new session, so entries are not blocked now."
+    )
 
 # --- the money line -------------------------------------------------------
 
@@ -386,8 +472,11 @@ if account:
         )
         + tile(
             "Open spreads",
-            str(len(group_into_spreads(positions))),
-            f"{len(positions)} option legs held",
+            str(len(paired_spreads(positions))) if book_known else "—",
+            f"{sum(1 for p in positions if is_option(p.symbol))} option legs held"
+            if book_known
+            else "position book unavailable",
+            INK if book_known else MUTED,
         )
         + tile(
             "Mode",
@@ -433,7 +522,8 @@ else:
     )
     st.altair_chart(performance_chart(series))
     st.caption(
-        "Both series indexed to their value at the agent's first session, so a "
+        "Both series indexed to their value at the agent's first logged "
+        "decision (or to the start of the past week, whichever is later), so a "
         "single axis carries both. A defined-risk spread is not built to track "
         "SPY — it is built to give up less of it when SPY falls."
     )
@@ -442,11 +532,21 @@ else:
 
 st.markdown('<div class="sec">Open positions</div>', unsafe_allow_html=True)
 
+# The card grid walks every bucket, orphans included, so unmanaged legs get a
+# card instead of disappearing. Only the counts above use paired_spreads.
 spreads = group_into_spreads(positions)
 today = datetime.now(ZoneInfo("America/New_York")).date()
 stops = StopConfig()
 
-if not spreads:
+if not book_known:
+    st.markdown(
+        f'<div class="card" style="border-left:3px solid {CRIT}"><div class="sub">'
+        "Position book unavailable — this is not a claim that the account is "
+        "flat. The mechanical stops run in the loop, not in this page, and are "
+        "unaffected by whatever broke here.</div></div>",
+        unsafe_allow_html=True,
+    )
+elif not spreads:
     st.markdown(
         '<div class="card"><div class="sub">Flat — no spreads open. '
         "A day with no position is a valid outcome, not a failure.</div></div>",
@@ -471,13 +571,17 @@ else:
         days = (state.expiration - today).days
         ceiling = -stops.loss_multiple_of_credit * state.credit_received
         pnl = state.unrealized_pl
+        # This spread's own underlying, never SPY's price standing in for it.
+        # With no quote, infinity leaves the loss and expiry stops working and
+        # only mutes the breach check, which is the one that needs a price.
+        leg_spot = spots.get(str(underlying))
         forced, why = should_stop_out(
-            state, spot if spot else state.short_strike * 2, today, stops
+            state, leg_spot if leg_spot else float("inf"), today, stops
         )
         toward = abs(pnl / ceiling) if ceiling and pnl < 0 else 0.0
 
         if forced:
-            colour, status = CRIT, why.split(".")[0].strip()
+            colour, status = CRIT, first_sentence(why)
         elif toward >= 0.5 or days <= 2:
             colour, status = WARN, "Watching — approaching a stop"
         else:
@@ -498,7 +602,11 @@ else:
         )
         breakeven = state.short_strike - per_share
 
-        cushion = f"{(spot - state.short_strike) / spot:+.2%} cushion" if spot else "—"
+        cushion = (
+            f"{(leg_spot - state.short_strike) / leg_spot:+.2%} cushion"
+            if leg_spot
+            else "no quote"
+        )
         pnl_colour = GOOD if pnl >= 0 else CRIT
 
         cards.append(
@@ -512,7 +620,9 @@ else:
             f'<span style="color:{pnl_colour}">{money(pnl, sign=True)} open</span> · '
             f"{escape(cushion)}</div>"
             + meter(abs(pnl) if pnl < 0 else 0.0, abs(ceiling) or 1.0, colour)
-            + position_strip(long_strike, state.short_strike, breakeven, spot, colour)
+            + position_strip(
+                long_strike, state.short_strike, breakeven, leg_spot, colour
+            )
             + f'<div class="sub" style="color:{colour}">{escape(status)}</div>'
             f'<div class="sub" style="font-size:.75rem">stop at {money(ceiling)}'
             f" · flattens {stops.close_within_days}d before expiry · breach at "
@@ -527,8 +637,13 @@ else:
 st.markdown('<div class="sec">Risk gates in force</div>', unsafe_allow_html=True)
 
 cfg = RiskConfig()
-short_legs = [p for p in positions if len(p.symbol) > 15 and float(p.qty) < 0]
-spy_spreads = sum(1 for p in short_legs if p.symbol.startswith("SPY"))
+short_legs = [p for p in positions if is_option(p.symbol) and float(p.qty) < 0]
+# startswith("SPY") also matches SPYG and misses every other name the agent
+# could hold. The gate itself keys on underlying_from_occ; so does this now.
+by_underlying = Counter(underlying_from_occ(p.symbol) for p in short_legs)
+worst_name, worst_count = (
+    by_underlying.most_common(1)[0] if by_underlying else ("none", 0)
+)
 equity_now = float(account.equity) if account else START
 day_pct = 0.0
 if account:
@@ -540,7 +655,24 @@ if account:
         day_pct = 0.0
 
 
-def gate(label: str, value: str, used: float, limit: float, note: str) -> str:
+def gate(
+    label: str, value: str, used: float, limit: float, note: str, known: bool = True
+) -> str:
+    """One gate, drawn against its limit.
+
+    `known=False` is for a gate whose input never arrived. A green 0-of-2 read
+    off a failed positions call is the one thing this panel must never show:
+    it is the same picture as a genuinely empty book.
+    """
+    if not known:
+        return (
+            f'<div class="card"><div class="lbl">{escape(label)}</div>'
+            f'<div class="val" style="font-size:1.15rem; color:{MUTED}">—</div>'
+            + meter(0, 1, MUTED)
+            + '<div class="sub" style="font-size:.75rem">Not measurable — the '
+            "position book did not load. Enforced in the loop regardless."
+            "</div></div>"
+        )
     ratio = 0.0 if limit <= 0 else used / limit
     colour = CRIT if ratio >= 1 else WARN if ratio >= 0.6 else GOOD
     return (
@@ -555,10 +687,12 @@ st.markdown(
     '<div class="grid g3">'
     + gate(
         "Spreads per underlying",
-        f"{spy_spreads} / {cfg.max_spreads_per_underlying}",
-        spy_spreads,
+        f"{worst_count} / {cfg.max_spreads_per_underlying}",
+        worst_count,
         cfg.max_spreads_per_underlying,
-        "Five spreads on SPY are one bet at five times the size.",
+        f"Heaviest name: {worst_name}. Repeated spreads on one underlying are "
+        "one bet at several times the size.",
+        known=book_known,
     )
     + gate(
         "Open spreads total",
@@ -566,6 +700,7 @@ st.markdown(
         len(short_legs),
         cfg.max_open_positions,
         "Concentration cap across all names.",
+        known=book_known,
     )
     + gate(
         "Risk per position",

@@ -1,7 +1,16 @@
-alpaca-py
-python-dotenv
-anthropic
-pandas
-streamlit
-pytest
-altair
+# Pinned to the versions the agent and dashboard were built and recorded
+# against. Streamlit Cloud resolves fresh on every build, so an unpinned
+# pandas or streamlit could land a new major on the judged URL days after
+# the demo was filmed. Bump these deliberately, not by accident.
+alpaca-py==0.44.0
+python-dotenv==1.2.3
+anthropic==1.2.0
+pandas==3.0.5
+streamlit==1.62.0
+altair==6.2.2
+
+# zoneinfo reads the system tz database; the agent needs America/New_York for
+# market hours. Ship it rather than assume the host image has it.
+tzdata
+
+pytest==9.1.1

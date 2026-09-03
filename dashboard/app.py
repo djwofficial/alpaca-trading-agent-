@@ -509,15 +509,22 @@ else:
     agent_change = float(final.get("Agent", 0.0))
     spy_change = float(final.get("SPY", 0.0))
     edge = agent_change - spy_change
-    edge_colour = GOOD if edge >= 0 else CRIT
+    agent_colour = GOOD if agent_change >= 0 else CRIT
+    # The scored number is the account's own return, not the gap to SPY. Lead
+    # with it; SPY is the context line. A premium-selling strategy lags a
+    # rallying index by design and cushions a falling one — the gap only means
+    # something alongside which way SPY went.
+    drift = (
+        "giving up upside it never tried to capture"
+        if edge < 0
+        else "ahead even before the downside protection is tested"
+    )
     st.markdown(
         '<div class="card" style="margin-bottom:12px"><div class="sub" '
-        'style="font-size:.95rem; color:#fff; margin:0">SPY '
-        f'<b style="color:{ORANGE}">{spy_change:+.2%}</b> over the same window · '
-        f'the agent <b style="color:{BLUE}">{agent_change:+.2%}</b> · '
-        f'<b style="color:{edge_colour}">{abs(edge) * 100:.2f}pp '
-        f'{"ahead of" if edge >= 0 else "behind"}</b> the underlying it trades.'
-        "</div></div>",
+        'style="font-size:.95rem; color:#fff; margin:0">The account is '
+        f'<b style="color:{agent_colour}">{agent_change:+.2%}</b> since it went '
+        f'live · SPY <b style="color:{ORANGE}">{spy_change:+.2%}</b> over the same '
+        f'window, so the agent is {drift}.</div></div>',
         unsafe_allow_html=True,
     )
     st.altair_chart(performance_chart(series))
@@ -748,25 +755,36 @@ if not entries:
     st.stop()
 
 ENTERED = {"submitted", "dry_run"}
-decisions = [e for e in entries if e.get("event") in ENTERED | {"rejected", "skipped"}]
-taken = [e for e in decisions if e.get("event") in ENTERED]
-skipped = [e for e in decisions if e.get("event") == "skipped"]
-rejected = [e for e in decisions if e.get("event") == "rejected"]
+# A live order carries a thesis; a closing order the agent sent to flatten a
+# position does not. Splitting them keeps "trades placed" honest — the Alpaca
+# account shows the same count.
+placed = [e for e in entries if e.get("event") == "submitted" and e.get("thesis")]
+closed_by_agent = [
+    e for e in entries if e.get("event") == "submitted" and not e.get("thesis")
+]
+skipped = [e for e in entries if e.get("event") == "skipped"]
+rejected = [e for e in entries if e.get("event") == "rejected"]
+considered = len(placed) + len(skipped) + len(rejected)
 calls = [e for e in entries if e.get("event") == "model_call"]
 spend = sum(float(e.get("usd") or 0) for e in calls)
 
 st.markdown('<div class="sec">Decision record</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="grid g4">'
-    + tile("Decisions", str(len(decisions)), "logged with reasoning")
-    + tile("Trades taken", str(len(taken)), "entries transmitted", GOOD)
     + tile(
-        "Declined by the agent",
+        "Trades placed",
+        str(len(placed)),
+        f"{len(closed_by_agent)} later closed on the agent's call",
+        GOOD,
+    )
+    + tile(
+        "Stood aside",
         str(len(skipped)),
-        f"{len(skipped) / len(decisions):.0%} of decisions" if decisions else "",
+        f"{len(skipped) / considered:.0%} of entry decisions" if considered else "",
         MUTED,
     )
-    + tile("Blocked by risk gates", str(len(rejected)), "vetoed in code", WARN)
+    + tile("Blocked by risk gates", str(len(rejected)), "vetoed in code, not prompt", WARN)
+    + tile("Every decision logged", str(len(entries)), "full JSONL audit trail")
     + "</div>",
     unsafe_allow_html=True,
 )

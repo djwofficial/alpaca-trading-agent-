@@ -3,6 +3,8 @@
 An autonomous options agent its own code can veto. Built on Alpaca for the
 **Alpaca AI Trading Agents Hackathon**.
 
+**Live dashboard: https://theta-warden.streamlit.app**
+
 ## What it does
 
 Theta Warden sells **defined-risk put credit spreads on SPY** on a live Alpaca

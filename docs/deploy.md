@@ -56,7 +56,7 @@ Streamlit Cloud redeploys automatically on push.
 |---|---|
 | Public GitHub repository | `https://github.com/djwofficial/alpaca-trading-agent-` |
 | Demo application platform | Streamlit |
-| Application URL | your `*.streamlit.app` URL from step 5 |
+| Application URL | **`https://theta-warden.streamlit.app`** (deployed 2026-09-04) |
 | Alpaca paper trading account ID | **`PA3JNFSU9BWL`** (account number) — internal UUID is `9c6f9e9f-45dd-4ce4-8525-832b320949d2` if they want that form instead |
 
 ## If Streamlit Cloud won't build

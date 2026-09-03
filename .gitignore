@@ -218,7 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Agent decision logs
-logs/
+#   logs/* rather than logs/ — git never descends into an excluded directory,
+#   so the negation below is only reachable if the directory itself stays visible.
+logs/*
 
 # ...but the decision journal IS the demo, and holds no secrets
 !logs/decisions.jsonl

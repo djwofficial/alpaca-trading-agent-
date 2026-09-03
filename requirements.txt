@@ -4,3 +4,4 @@ anthropic
 pandas
 streamlit
 pytest
+altair

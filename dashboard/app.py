@@ -810,8 +810,8 @@ st.markdown(
 )
 if calls:
     st.caption(
-        f"Model spend **${spend:.2f}** across {len(calls)} calls "
-        f"(${spend / len(calls):.3f} each). Standing aside is a decision, and a "
+        f"Model spend **\\${spend:.2f}** across {len(calls)} calls "
+        f"(\\${spend / len(calls):.3f} each). Standing aside is a decision, and a "
         "cheap one — a cycle with no candidates calls the model not at all."
     )
 

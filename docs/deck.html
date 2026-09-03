@@ -1,0 +1,604 @@
+<title>Theta Warden</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  /* ------------------------------------------------------------------ *
+   * Theta Warden — pitch deck.
+   * Palette and type inherited from the project dashboard (dashboard/app.py):
+   * near-black ground, warm-grey neutrals, one cool-blue accent, amber only
+   * for the SPY benchmark. Committed dark — every colour painted explicitly
+   * so the page holds on any host ground.
+   * ------------------------------------------------------------------ */
+  :root {
+    --bg:      #0d0d0d;
+    --surface: #17171a;
+    --raise:   #1e1e22;
+    --line:    rgba(255,255,255,0.11);
+    --line-2:  rgba(255,255,255,0.20);
+    --ink:     #ffffff;
+    --body:    #c6c5bd;
+    --muted:   #8b8981;
+    --blue:    #4a92e8;   /* the agent / primary */
+    --amber:   #d9682f;   /* SPY / benchmark only — never a status */
+    --good:    #24a524;
+    --warn:    #f2b02a;
+    --crit:    #dc4444;
+
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --pad: clamp(1.75rem, 5vw, 5.5rem);
+    --measure: 1120px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--body);
+    font-family: var(--sans);
+    font-size: clamp(1rem, 0.55rem + 0.7vw, 1.16rem);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection { background: rgba(74,146,232,0.32); }
+
+  /* ---- slide shell ------------------------------------------------- */
+  .slide {
+    min-height: 100vh;
+    scroll-snap-align: start;
+    display: flex;
+    flex-direction: column;
+    padding: var(--pad);
+    border-bottom: 1px solid var(--line);
+    position: relative;
+  }
+  .inner {
+    width: 100%;
+    max-width: var(--measure);
+    margin: 0 auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: clamp(1rem, 2.4vw, 2rem);
+  }
+
+  .eyebrow {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 0.9rem;
+    margin-bottom: 0.5rem;
+  }
+  .eyebrow .n { color: var(--body); }
+  .eyebrow b { color: var(--blue); font-weight: 500; }
+
+  h1, h2 { color: var(--ink); text-wrap: balance; margin: 0; font-weight: 600; line-height: 1.08; letter-spacing: -0.02em; }
+  h1 { font-size: clamp(2.6rem, 1rem + 7vw, 5rem); }
+  h2 { font-size: clamp(1.7rem, 0.9rem + 2.7vw, 2.9rem); }
+
+  .lede { font-size: clamp(1.2rem, 0.9rem + 1vw, 1.7rem); color: var(--body); max-width: 40ch; text-wrap: balance; }
+  p { margin: 0; max-width: 62ch; }
+  strong { color: var(--ink); font-weight: 600; }
+  .mono { font-family: var(--mono); }
+  .tick-txt { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); letter-spacing: 0.02em; }
+
+  .kicker {
+    font-size: clamp(1.15rem, 0.9rem + 0.9vw, 1.5rem);
+    color: var(--blue);
+    font-weight: 500;
+    text-wrap: balance;
+    max-width: 32ch;
+  }
+
+  /* ---- lists ----------------------------------------------------- */
+  ul.points { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.85rem; max-width: 66ch; }
+  ul.points li { position: relative; padding-left: 1.5rem; }
+  ul.points li::before {
+    content: "";
+    position: absolute; left: 0; top: 0.62em;
+    width: 6px; height: 6px; background: var(--blue);
+  }
+
+  .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: clamp(1.25rem, 3vw, 2.75rem); align-items: start; }
+
+  .col-head {
+    font-family: var(--mono); font-size: 0.78rem; text-transform: uppercase;
+    letter-spacing: 0.14em; color: var(--ink);
+    padding-bottom: 0.6rem; border-bottom: 1px solid var(--line-2); margin-bottom: 1rem;
+  }
+  .stack { display: flex; flex-direction: column; gap: 0.55rem; }
+  .stack .row { font-size: 0.98rem; }
+
+  /* ---- enumerated pair (slide 4) -------------------------------- */
+  .enum { display: flex; flex-direction: column; gap: 1.1rem; max-width: 70ch; }
+  .enum > div { display: grid; grid-template-columns: 2.4rem 1fr; gap: 1rem; align-items: start; }
+  .enum .idx { font-family: var(--mono); color: var(--blue); font-size: 0.95rem; padding-top: 0.15rem; }
+  .enum h3 { margin: 0 0 0.2rem; color: var(--ink); font-size: 1.08rem; font-weight: 600; }
+
+  .quote {
+    border-left: 2px solid var(--blue);
+    padding-left: 1.1rem;
+    font-size: clamp(1.1rem, 0.9rem + 0.8vw, 1.4rem);
+    color: var(--ink);
+    text-wrap: balance;
+    max-width: 34ch;
+  }
+
+  /* ---- pipeline (slide 5) -------------------------------------- */
+  .pipe { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; }
+  .node {
+    flex: 1 1 150px;
+    border: 1px solid var(--line);
+    border-top: 2px solid var(--line-2);
+    background: var(--surface);
+    padding: 0.9rem 0.95rem 1rem;
+    display: flex; flex-direction: column; gap: 0.35rem;
+  }
+  .node.brain { border-top-color: var(--blue); }
+  .node .k { font-family: var(--mono); font-size: 0.82rem; color: var(--ink); letter-spacing: 0.01em; }
+  .node .s { font-size: 0.82rem; color: var(--muted); line-height: 1.4; }
+  .pipe .arr { align-self: center; color: var(--line-2); font-family: var(--mono); font-size: 1rem; padding: 0 0.1rem; }
+
+  /* ---- table (slide 6) --------------------------------------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); }
+  table.gates { width: 100%; border-collapse: collapse; font-size: 0.94rem; min-width: 560px; }
+  table.gates th, table.gates td { text-align: left; padding: 0.72rem 1rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.gates thead th {
+    font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.13em; color: var(--muted); font-weight: 500;
+    background: var(--surface);
+  }
+  table.gates tbody tr:last-child td { border-bottom: 0; }
+  table.gates td:first-child { color: var(--ink); font-weight: 500; white-space: nowrap; }
+  table.gates td.lim { font-family: var(--mono); color: var(--blue); font-size: 0.86rem; white-space: nowrap; }
+
+  .aside {
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--amber);
+    background: var(--surface);
+    padding: 1rem 1.2rem;
+    display: flex; flex-direction: column; gap: 0.5rem;
+    font-size: 0.94rem;
+  }
+  .aside b { color: var(--ink); }
+
+  .fileref { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); }
+  .fileref::before { content: "› "; color: var(--line-2); }
+
+  /* ---- tiles (slide 9) -------------------------------------- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .tile { background: var(--bg); padding: 1.15rem 1.2rem 1.3rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  .tile .lbl { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .tile .n { font-family: var(--mono); font-size: clamp(1.7rem, 1rem + 2.2vw, 2.5rem); color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
+  .tile .n.up { color: var(--good); }
+  .tile .sub { font-size: 0.8rem; color: var(--muted); }
+
+  /* ---- trail row (slide 10) -------------------------------- */
+  .trail {
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--good);
+    background: var(--surface);
+    padding: 1rem 1.2rem;
+    display: flex; flex-direction: column; gap: 0.7rem;
+    max-width: 74ch;
+  }
+  .trail .th { display: flex; justify-content: space-between; gap: 1rem; font-family: var(--mono); font-size: 0.76rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+  .trail .th b { color: var(--good); font-weight: 500; }
+  .trail .legline { font-family: var(--mono); font-size: 0.88rem; color: var(--body); }
+  .trail .tag { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 0.15rem; }
+  .trail .qt { font-size: 0.9rem; color: var(--body); }
+
+  .links { display: flex; flex-wrap: wrap; gap: 0.4rem 1.4rem; font-family: var(--mono); font-size: 0.84rem; color: var(--muted); }
+  .links span { color: var(--blue); }
+
+  .foot {
+    position: absolute; left: var(--pad); right: var(--pad); bottom: 1.2rem;
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--muted);
+    border-top: 1px solid var(--line); padding-top: 0.7rem;
+  }
+  .foot .wm { color: var(--body); }
+
+  /* ---- title slide ---------------------------------------- */
+  .title-meta { font-family: var(--mono); font-size: 0.9rem; color: var(--muted); letter-spacing: 0.06em; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
+  .title-meta b { color: var(--blue); font-weight: 500; }
+  .wordmark { display: flex; align-items: center; gap: 0.9rem; }
+  .wordmark .glyph { width: 0.9em; height: 0.9em; border: 2px solid var(--blue); transform: rotate(45deg); flex: none; }
+
+  /* ---- nav ------------------------------------------------ */
+  .dots { position: fixed; right: 0.85rem; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 0.55rem; z-index: 20; }
+  .dots button {
+    width: 8px; height: 8px; padding: 0; border: 1px solid var(--line-2); background: transparent;
+    cursor: pointer; transition: background 0.2s, border-color 0.2s, transform 0.2s;
+  }
+  .dots button[aria-current="true"] { background: var(--blue); border-color: var(--blue); transform: scale(1.25); }
+  .dots button:hover { border-color: var(--blue); }
+  .dots button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  .arrows { position: fixed; right: 1.1rem; bottom: 1.1rem; display: flex; gap: 0.4rem; z-index: 20; }
+  .arrows button, .notes-btn {
+    font-family: var(--mono); font-size: 0.78rem; color: var(--body);
+    background: var(--raise); border: 1px solid var(--line-2); cursor: pointer;
+    padding: 0.45rem 0.7rem; line-height: 1;
+  }
+  .arrows button:hover, .notes-btn:hover { border-color: var(--blue); color: var(--ink); }
+  .arrows button:focus-visible, .notes-btn:focus-visible, .dots button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .notes-btn { position: fixed; left: 1.1rem; bottom: 1.1rem; z-index: 20; }
+  .notes-btn[aria-pressed="true"] { border-color: var(--blue); color: var(--ink); }
+
+  .note {
+    margin-top: 1.4rem;
+    border-top: 1px dashed var(--line-2);
+    padding-top: 0.8rem;
+    font-size: 0.86rem;
+    color: var(--muted);
+    max-width: 70ch;
+  }
+  .note::before { content: "Speaker note — "; font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--blue); }
+  body:not(.show-notes) .note { display: none; }
+
+  svg { display: block; max-width: 100%; height: auto; }
+
+  @media (max-width: 640px) {
+    .foot { position: static; margin-top: 2rem; }
+    .dots { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .dots button { transition: none; }
+  }
+
+  /* ---- print / PDF export -------------------------------------- *
+   * File > Print > Save as PDF gives one landscape slide per page. */
+  @media print {
+    @page { size: 1280px 720px; margin: 0; }
+    html { scroll-snap-type: none; }
+    body { background: var(--bg); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .slide { min-height: auto; height: 720px; width: 1280px; page-break-after: always; break-after: page; border: 0; overflow: hidden; }
+    .dots, .arrows, .notes-btn { display: none !important; }
+    .foot { position: absolute; }
+    .note { display: none !important; }
+  }
+</style>
+
+<main class="deck">
+
+  <!-- 01 · TITLE -->
+  <section class="slide" id="s1" aria-label="Slide 1: Theta Warden">
+    <div class="eyebrow"><span>Alpaca AI Trading Agents Hackathon · 2026</span><span class="n">01 / 11</span></div>
+    <div class="inner">
+      <h1 class="wordmark"><span class="glyph" aria-hidden="true"></span>Theta&nbsp;Warden</h1>
+      <p class="lede">An autonomous options agent its own code can veto.</p>
+      <div class="title-meta">
+        <span>PUT CREDIT SPREADS</span><span>SPY</span><span>LIVE PAPER ACCOUNT</span>
+        <span><b>$100,000</b> SINCE AUG 31</span>
+      </div>
+      <p class="note">One line: "Theta Warden trades options autonomously on a live Alpaca paper account. The name is the thesis — theta is the time decay a premium seller earns; the warden is the code layer that can veto the model."</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>github.com/&lt;you&gt; · &lt;app&gt;.streamlit.app</span></div>
+  </section>
+
+  <!-- 02 · THE PROBLEM -->
+  <section class="slide" id="s2" aria-label="Slide 2: The problem">
+    <div class="eyebrow"><span><b>The problem</b></span><span class="n">02 / 11</span></div>
+    <div class="inner">
+      <h2>Autonomy and options don't mix by default</h2>
+      <ul class="points">
+        <li>An unsupervised LLM placing multi-leg options trades can lose money fast — and the losses are hard to undo.</li>
+        <li>This competition <strong>scores P&amp;L</strong>. A blow-up isn't a bug report, it's the final number.</li>
+        <li>A prompt is not a control. A model can be argued out of an instruction.</li>
+      </ul>
+      <p class="kicker">How do you get real autonomy <em>and</em> a hard floor under the downside?</p>
+      <p class="note">Most "AI trading agent" demos are either not autonomous or not safe. We wanted both, and options make the safety problem sharp because the losses are fast and asymmetric.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>The problem</span></div>
+  </section>
+
+  <!-- 03 · THE STRATEGY -->
+  <section class="slide" id="s3" aria-label="Slide 3: The strategy">
+    <div class="eyebrow"><span><b>The strategy</b></span><span class="n">03 / 11</span></div>
+    <div class="inner">
+      <h2>Defined-risk put credit spreads on SPY</h2>
+      <div class="two-col">
+        <ul class="points">
+          <li>Sell a put, buy a lower-strike put, same ~8-day expiry.</li>
+          <li>Collect a net <strong>credit</strong> up front.</li>
+          <li>Keep it in full whenever SPY stays above the short strike — the common case.</li>
+          <li>Worst case = <span class="mono">width − credit</span>. Known before entry.</li>
+        </ul>
+        <div>
+          <svg viewBox="0 0 640 210" role="img" aria-label="Price axis: long put at 745, short put at 750 with breakeven 749.70, SPY trading at 773, a roughly 3 percent cushion between the price and the short strike, and a capped loss zone below the short strike.">
+            <!-- loss zone -->
+            <rect x="40" y="96" width="107" height="46" fill="#dc4444" opacity="0.14"/>
+            <text x="46" y="88" class="svg-lab" fill="#dc4444" font-size="11" font-family="IBM Plex Mono, monospace">LOSS ZONE — capped</text>
+            <!-- axis -->
+            <line x1="40" y1="119" x2="600" y2="119" stroke="#8b8981" stroke-width="1.5"/>
+            <!-- long strike -->
+            <line x1="57" y1="108" x2="57" y2="130" stroke="#8b8981" stroke-width="2"/>
+            <text x="57" y="162" text-anchor="middle" fill="#8b8981" font-size="11.5" font-family="IBM Plex Mono, monospace">LONG 745P</text>
+            <text x="57" y="178" text-anchor="middle" fill="#5f5e58" font-size="10" font-family="IBM Plex Mono, monospace">buys the floor</text>
+            <!-- short strike -->
+            <line x1="147" y1="104" x2="147" y2="134" stroke="#ffffff" stroke-width="2.5"/>
+            <text x="147" y="162" text-anchor="middle" fill="#ffffff" font-size="11.5" font-family="IBM Plex Mono, monospace">SHORT 750P</text>
+            <text x="147" y="178" text-anchor="middle" fill="#5f5e58" font-size="10" font-family="IBM Plex Mono, monospace">BE 749.70</text>
+            <!-- spot -->
+            <circle cx="547" cy="119" r="6" fill="#4a92e8"/>
+            <text x="547" y="100" text-anchor="middle" fill="#4a92e8" font-size="11.5" font-family="IBM Plex Mono, monospace">SPY 772.98</text>
+            <!-- cushion bracket -->
+            <line x1="147" y1="58" x2="547" y2="58" stroke="#4a92e8" stroke-width="1" opacity="0.6"/>
+            <line x1="147" y1="53" x2="147" y2="63" stroke="#4a92e8" stroke-width="1" opacity="0.6"/>
+            <line x1="547" y1="53" x2="547" y2="63" stroke="#4a92e8" stroke-width="1" opacity="0.6"/>
+            <text x="347" y="46" text-anchor="middle" fill="#4a92e8" font-size="11.5" font-family="IBM Plex Mono, monospace">CUSHION ≈ 3%</text>
+          </svg>
+        </div>
+      </div>
+      <p class="tick-txt">Liquid. Positive time decay. Resolves inside the competition window.</p>
+      <p class="note">Every trade has a worst case we know at entry. That is the entire reason it is safe enough to hand to a model.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>The strategy</span></div>
+  </section>
+
+  <!-- 04 · THE EDGE -->
+  <section class="slide" id="s4" aria-label="Slide 4: Where the edge is">
+    <div class="eyebrow"><span><b>The edge</b></span><span class="n">04 / 11</span></div>
+    <div class="inner">
+      <h2>Strike-picking is a coin flip. We don't compete there.</h2>
+      <ul class="points">
+        <li>Every candidate reports the win rate it needs just to break even.</li>
+        <li>The market prices that within a hair of the true probability — so the "best-looking" spread is a coin flip with extra steps.</li>
+      </ul>
+      <div class="enum">
+        <div><span class="idx">01</span><div><h3>Selectivity</h3>Trade only when the premium overpays for the risk. A skip costs nothing, and most days are a skip.</div></div>
+        <div><span class="idx">02</span><div><h3>Exits</h3>Cut a loser before it reaches max loss. Losses here run 7–10× the size of a win.</div></div>
+      </div>
+      <p class="quote">One avoided max-loss is worth many collected credits.</p>
+      <p class="note">This is the honest core of the pitch. No magic signal — just a disciplined operator that skips most days and cuts losers early, which is a job an LLM inside a hard cage can actually do.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>The edge</span></div>
+  </section>
+
+  <!-- 05 · ARCHITECTURE -->
+  <section class="slide" id="s5" aria-label="Slide 5: Architecture">
+    <div class="eyebrow"><span><b>Architecture</b></span><span class="n">05 / 11</span></div>
+    <div class="inner">
+      <h2>Code is the supervisor. The model is the judgment.</h2>
+      <div class="pipe">
+        <div class="node"><span class="k">Market data</span><span class="s">alpaca-py: account, chain, quotes, clock</span></div>
+        <span class="arr" aria-hidden="true">→</span>
+        <div class="node"><span class="k">Candidate finder</span><span class="s">enumerate every legal spread, price it conservatively</span></div>
+        <span class="arr" aria-hidden="true">→</span>
+        <div class="node"><span class="k">Risk gates</span><span class="s">veto anything unsafe — functions that return False</span></div>
+        <span class="arr" aria-hidden="true">→</span>
+        <div class="node brain"><span class="k">LLM brain</span><span class="s">pick one pre-approved candidate, or skip</span></div>
+        <span class="arr" aria-hidden="true">→</span>
+        <div class="node"><span class="k">Executor</span><span class="s">re-checks the gate, dry-run by default</span></div>
+        <span class="arr" aria-hidden="true">→</span>
+        <div class="node"><span class="k">Journal</span><span class="s">every decision + reasoning, JSONL</span></div>
+      </div>
+      <p>The brain only ever chooses from a menu the gates already approved. It <strong>cannot invent a strike, size past the cap, or go naked</strong> — whatever it returns is clamped to something legal before it reaches Alpaca.</p>
+      <p class="note">The model never places a trade. It picks an index off a list the code built and the gates already cleared.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>Architecture</span></div>
+  </section>
+
+  <!-- 06 · RISK GATES -->
+  <section class="slide" id="s6" aria-label="Slide 6: Risk gates">
+    <div class="eyebrow"><span><b>Risk gates</b></span><span class="n">06 / 11</span></div>
+    <div class="inner">
+      <h2>Enforced in code, not in the prompt</h2>
+      <p class="fileref">src/risk/gates.py — <span class="mono">RiskGate.check()</span> runs before any order</p>
+      <div class="table-wrap">
+        <table class="gates">
+          <thead><tr><th>Gate</th><th>Limit</th><th>Prevents</th></tr></thead>
+          <tbody>
+            <tr><td>Position size</td><td class="lim">≤ 5% equity</td><td>One trade sinking the book</td></tr>
+            <tr><td>Daily loss kill-switch</td><td class="lim">halt at −3% / day</td><td>A bad day compounding</td></tr>
+            <tr><td>Spreads per underlying</td><td class="lim">≤ 2 per name</td><td>Concentration the size cap can't see</td></tr>
+            <tr><td>Open spreads</td><td class="lim">≤ 5 total</td><td>Book-wide concentration</td></tr>
+            <tr><td>Order size</td><td class="lim">≤ 10 contracts</td><td>A fat finger sizing up</td></tr>
+            <tr><td>Defined-risk only</td><td class="lim">long leg required</td><td>Naked short options, ever</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="aside">
+        <span><b>Closing orders bypass every gate and the halt.</b> Reducing risk is always allowed — a halted agent must still be able to flatten.</span>
+        <span><b>A trade with no stated max-loss is rejected.</b> Downside you can't name isn't a trade.</span>
+      </div>
+      <p class="note">A reviewer can open this one file and see the whole safety model in about thirty seconds. That was deliberate.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>Risk gates</span></div>
+  </section>
+
+  <!-- 07 · THE BRAIN -->
+  <section class="slide" id="s7" aria-label="Slide 7: The brain, boxed in">
+    <div class="eyebrow"><span><b>The brain</b></span><span class="n">07 / 11</span></div>
+    <div class="inner">
+      <h2>The worst a confused model can do is take a legal trade or stand aside</h2>
+      <ul class="points">
+        <li>Judgment model: <strong>Claude Opus-class</strong>, structured output. Entry decisions think harder than exit checks — they're rarer and irreversible.</li>
+        <li>On entry it commits a <strong>thesis</strong> and an <strong>invalidation</strong> — concrete and checkable: <span class="mono">"SPY closes below 758, or −1.5% intraday."</span></li>
+        <li>Every later cycle the exit check asks one question: <em>has that happened?</em> An unrealised loss alone is not a reason to close.</li>
+        <li><span class="mono">_sanitize_entry</span> clamps whatever the model returns. Out-of-range → skip.</li>
+        <li>A deterministic fallback runs with no API key. A model outage degrades to inaction — never to a blind trade.</li>
+      </ul>
+      <p class="note">The invalidation is a pre-commitment: the model writes down what would change its mind before it has a position, so it can't rationalise its way into holding a loser later.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>The brain</span></div>
+  </section>
+
+  <!-- 08 · ALPACA -->
+  <section class="slide" id="s8" aria-label="Slide 8: Alpaca infrastructure">
+    <div class="eyebrow"><span><b>Alpaca infrastructure</b></span><span class="n">08 / 11</span></div>
+    <div class="inner">
+      <h2>Built on Alpaca's Trading and Market Data APIs</h2>
+      <div class="two-col">
+        <div>
+          <div class="col-head">Trading API</div>
+          <div class="stack">
+            <span class="row">Account &amp; equity, open positions, working orders</span>
+            <span class="row">Market clock — session-aware</span>
+            <span class="row">Multi-leg <span class="mono">(MLEG)</span> limit orders</span>
+            <span class="row">Portfolio history — the dashboard curve</span>
+          </div>
+        </div>
+        <div>
+          <div class="col-head">Market Data API</div>
+          <div class="stack">
+            <span class="row">Option-chain snapshots: quotes, greeks, IV</span>
+            <span class="row">Filtered to the ~8-day window</span>
+            <span class="row">Stock latest trade + daily bars</span>
+          </div>
+        </div>
+      </div>
+      <div class="aside">
+        <span><b>Multi-leg credit prices sign from the account's side</b> — negative is a credit received. Verified against a live fill <span class="mono">(0.46 → −0.40)</span>.</span>
+        <span><b>CLI interface.</b> Paper by default; <span class="mono">--live</span> required on every run. The executor dry-runs unless told otherwise.</span>
+      </div>
+      <p class="note">Everything deterministic — data, gates, sizing, logging, the loop — is Python against alpaca-py. The model is the only non-deterministic part, and it's the most boxed-in.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>Alpaca infrastructure</span></div>
+  </section>
+
+  <!-- 09 · RESULTS -->
+  <section class="slide" id="s9" aria-label="Slide 9: Live results">
+    <div class="eyebrow"><span><b>Results</b> · refresh before export</span><span class="n">09 / 11</span></div>
+    <div class="inner">
+      <h2>Trading since Aug 31 on a fresh $100,000 account</h2>
+      <div class="tiles">
+        <div class="tile"><span class="lbl">Equity</span><span class="n up">+0.28%</span><span class="sub">$100,283.83 · since inception</span></div>
+        <div class="tile"><span class="lbl">Trades placed</span><span class="n">3</span><span class="sub">1 closed on the agent's call · 2 open, both green</span></div>
+        <div class="tile"><span class="lbl">Stood aside</span><span class="n">57%</span><span class="sub">of entry decisions · 17 blocked by gates</span></div>
+        <div class="tile"><span class="lbl">Model spend</span><span class="n">$0.18</span><span class="sub">total, all-in</span></div>
+      </div>
+      <p>SPY <span class="mono" style="color:var(--amber)">+~0.9%</span> over the same window — the spread trades that upside for a capped, known downside. Small, positive, low-drawdown, and every number is reconstructable from the journal and the Alpaca account.</p>
+      <p class="note">Replace all four tiles and the SPY figure with what the dashboard shows on the day you export.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>Results</span></div>
+  </section>
+
+  <!-- 10 · THE DECISION TRAIL -->
+  <section class="slide" id="s10" aria-label="Slide 10: The decision trail">
+    <div class="eyebrow"><span><b>Audit</b></span><span class="n">10 / 11</span></div>
+    <div class="inner">
+      <h2>Every trade and every skip, reconstructable</h2>
+      <div class="trail">
+        <div class="th"><b>Entered</b><span>SPY · 2026-09-03</span></div>
+        <div class="legline">sell 748P / buy 743P · 4 contracts · exp 2026-09-11 · max loss $1,908</div>
+        <div><span class="tag">Thesis</span><span class="qt">Realized daily vol over the last six closes is only ~0.45–0.5%; a 2.64% decline to breakeven inside six sessions is roughly a 2-sigma move, well below the ~5% loss frequency this credit needs to break even.</span></div>
+        <div><span class="tag">Wrong if</span><span class="qt">SPY closes below 758, or trades down more than 1.5% from 768.27 intraday, or the spread's mark reaches 2.5× the credit received.</span></div>
+      </div>
+      <ul class="points">
+        <li>One JSONL line per decision — entered, skipped, rejected, closed, errored, plus model cost.</li>
+        <li>The dashboard reads only that file and the live Alpaca book. It never imports the loop.</li>
+        <li><span class="mono">Thesis</span> and <span class="mono">Wrong if</span> are recorded at entry and can't be edited after.</li>
+      </ul>
+      <p class="note">The decision trail is the deliverable we're proudest of. The P&amp;L is what it is, but you can see the reasoning behind every point of it.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>Audit</span></div>
+  </section>
+
+  <!-- 11 · CLOSE -->
+  <section class="slide" id="s11" aria-label="Slide 11: What's next">
+    <div class="eyebrow"><span><b>Next</b></span><span class="n">11 / 11</span></div>
+    <div class="inner">
+      <h1 class="wordmark"><span class="glyph" aria-hidden="true"></span>Theta&nbsp;Warden</h1>
+      <ul class="points">
+        <li>A debating-committee brain in place of the single analyst — the <span class="mono">Brain</span> interface already allows it.</li>
+        <li>More liquid underlyings beyond SPY.</li>
+        <li>Partial profit-taking on the way to expiry.</li>
+      </ul>
+      <p class="kicker">Supervised autonomy. The model can be swapped; the floor stays where it is.</p>
+      <div class="links"><span>repo</span> github.com/&lt;you&gt; &nbsp;·&nbsp; <span>dashboard</span> &lt;app&gt;.streamlit.app &nbsp;·&nbsp; <span>write-up</span> docs/writeup.md &nbsp;·&nbsp; <span>video</span> &lt;link&gt;</div>
+      <p class="note">The architecture was built to grow — swapping the brain changes nothing downstream. But the safety floor stays exactly where it is.</p>
+    </div>
+    <div class="foot"><span class="wm">Theta Warden</span><span>[team name] · Alpaca AI Trading Agents Hackathon 2026</span></div>
+  </section>
+
+</main>
+
+<div class="dots" role="tablist" aria-label="Slides"></div>
+<div class="arrows">
+  <button type="button" data-dir="-1" aria-label="Previous slide">◀ prev</button>
+  <button type="button" data-dir="1" aria-label="Next slide">next ▶</button>
+</div>
+<button type="button" class="notes-btn" aria-pressed="false">Speaker notes</button>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+    var dotWrap = document.querySelector(".dots");
+    var motionOK = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var current = 0;
+
+    slides.forEach(function (s, idx) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-label", "Slide " + (idx + 1));
+      b.addEventListener("click", function () { goTo(idx); });
+      dotWrap.appendChild(b);
+    });
+    var dots = Array.prototype.slice.call(dotWrap.children);
+
+    function mark(idx) {
+      current = idx;
+      dots.forEach(function (d, i) { d.setAttribute("aria-current", i === idx ? "true" : "false"); });
+    }
+
+    function goTo(idx) {
+      idx = Math.max(0, Math.min(slides.length - 1, idx));
+      slides[idx].scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "start" });
+      mark(idx);
+    }
+
+    if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) mark(slides.indexOf(e.target));
+        });
+      }, { threshold: 0.55 });
+      slides.forEach(function (s) { io.observe(s); });
+    }
+
+    document.querySelectorAll(".arrows button").forEach(function (btn) {
+      btn.addEventListener("click", function () { goTo(current + parseInt(btn.dataset.dir, 10)); });
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      var tag = (e.target.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      if (["ArrowDown", "ArrowRight", "PageDown", " "].indexOf(e.key) > -1) { e.preventDefault(); goTo(current + 1); }
+      else if (["ArrowUp", "ArrowLeft", "PageUp"].indexOf(e.key) > -1) { e.preventDefault(); goTo(current - 1); }
+      else if (e.key === "Home") { e.preventDefault(); goTo(0); }
+      else if (e.key === "End") { e.preventDefault(); goTo(slides.length - 1); }
+      else if (e.key.toLowerCase() === "n") { toggleNotes(); }
+    });
+
+    var notesBtn = document.querySelector(".notes-btn");
+    function toggleNotes() {
+      var on = document.body.classList.toggle("show-notes");
+      notesBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    notesBtn.addEventListener("click", toggleNotes);
+
+    mark(0);
+  })();
+</script>

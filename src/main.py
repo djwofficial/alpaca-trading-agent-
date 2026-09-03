@@ -562,6 +562,12 @@ def main():
         except Exception as exc:  # a bad cycle must not end the session
             log(f"Cycle failed: {type(exc).__name__}: {exc}")
             journal.record(event="cycle_error", error=str(exc))
+            # Stamp the failure too. Every other exit from run_cycle
+            # heartbeats, so without this a process that is alive and failing
+            # every cycle freezes state.json and reads on the dashboard as a
+            # dead process — the one case where you would go and restart
+            # something that does not need restarting.
+            heartbeat("cycle_error")
 
         if args.once:
             return
